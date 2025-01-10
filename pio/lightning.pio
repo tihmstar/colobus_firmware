@@ -1,0 +1,65 @@
+.program lightning_rx
+
+.define public LIGHTNING_IRQ_NUM    0
+.define LIGHTNING_IRQ_SYNC          1
+
+TestLineState:
+    JMP PIN, readBit
+    NOP                 [3]
+    IN PINS, 1
+    WAIT 1 PIN 0
+    JMP X--, readByte
+    NOP                 [7]
+    NOP                 [7]
+readBus:
+    SET X, 7
+readByte:
+    SET Y, 10
+readBit:
+    JMP Y--, TestLineState
+
+final:
+    IRQ WAIT LIGHTNING_IRQ_NUM
+    MOV ISR, NULL
+
+.wrap_target
+public reset:
+    SET X, 10
+    WAIT 0 PIN 0
+
+checkBrake:
+    JMP PIN, reset
+    JMP X--, checkBrake
+    SET X, 5
+    IRQ WAIT LIGHTNING_IRQ_SYNC
+testBrakeOver:
+    JMP PIN readBus
+    JMP X--, testBrakeOver
+.wrap
+
+
+.program lightning_tx
+.side_set 1 opt
+.define LIGHTNING_IRQ_SYNC          1
+writeBus:
+    SET PINS, 1                        side 1
+writeByte:
+    SET X, 7
+
+doWriteByte:
+    SET PINS, 0                 [1]
+    OUT PINS, 1                 [4]
+    SET PINS, 1                 [1]
+    JMP X--, doWriteByte
+
+    NOP                         [7]
+    NOP                         [1]
+    JMP !OSRE, writeByte
+    NOP
+finish:
+
+.wrap_target
+public start:
+    IRQ CLEAR LIGHTNING_IRQ_SYNC    side 0
+    JMP !OSRE, writeBus
+.wrap

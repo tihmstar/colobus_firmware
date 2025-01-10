@@ -1,0 +1,29 @@
+.program swd
+.side_set 1
+
+/*
+    SWD_CLK = swd_base + 0
+    SWD_IO  = swd_base + 1
+*/
+
+public read:
+    SET PINDIRS, 0      side 0
+    OUT X, 8            side 0
+loop_read:
+    IN PINS, 1          side 1
+    JMP X--, loop_read  side 0
+
+    PUSH                side 0
+.wrap_target
+//    SET PINDIRS, 0      side 0
+public start:
+    OUT PC, 8           side 0
+
+public write:
+    SET PINDIRS, 1      side 0
+    OUT X, 8            side 0
+loop_write:
+    OUT PINS, 1         side 0
+    JMP X--, loop_write side 1
+    SET PINS, 1         side 0
+.wrap

@@ -1,0 +1,69 @@
+name: CI - Build on changes in Docker container
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        config: [release]
+
+    runs-on: ubuntu-latest
+
+    env:
+      BUILDDIR: "build_${{ matrix.config }}"
+      PICO_SDK_PATH: /usr/share/pico_sdk
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'true'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get --yes install gcc-arm-none-eabi
+        ( git clone --depth 1 https://github.com/raspberrypi/pico-sdk $PICO_SDK_PATH;
+          cd $PICO_SDK_PATH;
+          git submodule update --init;
+        )
+        git clone --depth 1 https://github.com/raspberrypi/picotool.git
+        cd picotool
+        mkdir build
+        cd build
+        cmake ..
+        make -j
+        sudo make install
+        cd ..
+        rm -rf picotool
+
+    - name: Configure CMake
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        CONFARGS=""
+        CONF=$(echo ${{ matrix.config }} | cut -d '-' -f1)
+        echo "Build for config: default"
+        cmake --fresh -B ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }} -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} ${CONFARGS}
+
+    - name: Build
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        make -C ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }} -j
+
+    - name: Archive artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: colobus_firmware-binaries-${{ matrix.config }}-${{ github.sha }}
+        path: |
+          ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }}/*.bin
+          ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }}/*.elf
+          ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }}/*.elf.map
+          ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }}/*.hex
+          ${{ github.workspace }}/${{ env.BUILDDIR }}_${{ matrix.config }}/*.uf2
