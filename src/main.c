@@ -288,6 +288,15 @@ int task_spam(){
         }else if (gDPIDR == 0x4ba02477){
             //s8002
             uart_ctrl_reg = 0xC83B401C;
+            {
+                uint32_t memdata = 0;
+                if (SWD_readmem(0x80000004, &memdata) == SWD_RSP_OK){
+                    if (memdata == 0x50300003){
+                        //actually t8011 (ATV4K)
+                        uart_ctrl_reg = 0xd063401C;
+                    }
+                }
+            }
         }
 
         if (uart_ctrl_reg){
