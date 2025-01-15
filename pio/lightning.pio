@@ -19,7 +19,7 @@ readBit:
     JMP Y--, TestLineState
 
 final:
-    IRQ WAIT LIGHTNING_IRQ_NUM
+    IRQ SET LIGHTNING_IRQ_NUM
     MOV ISR, NULL
 
 .wrap_target
