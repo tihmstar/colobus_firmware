@@ -26,8 +26,15 @@
 #define USEC_PER_MSEC    1000L
 
 #define PIN_SDQ 3
-#define PIN_BUTTON 5
-#define PIN_LED 25
+
+#define PIN_BUTTON1 5
+#define PIN_BUTTON2 6
+#define PIN_BUTTON3 7
+
+#define PIN_LED   25
+#define PIN_LED1  26
+#define PIN_LED2  27
+#define PIN_LED3  28
 
 
 #define PIN_SWDBASE 2
@@ -144,14 +151,16 @@ static bool get_my_bootsel_button(void){
 }
 
 void button_init(){
-    gpio_init(PIN_BUTTON);
-    gpio_set_dir(PIN_BUTTON, 0);
-    gpio_pull_up(PIN_BUTTON);
+  for (size_t i = 0; i < 3; i++){
+    gpio_init(PIN_BUTTON1+i);
+    gpio_set_dir(PIN_BUTTON1+i, GPIO_IN);
+    gpio_pull_up(PIN_BUTTON1+i);
+  }
 }
 
 bool get_button(void){
     if (get_my_bootsel_button()) return true;
-    return !gpio_get(PIN_BUTTON);
+    return !gpio_get(PIN_BUTTON1);
 }
 
 typedef enum {
@@ -164,9 +173,11 @@ typedef enum {
 } t_buttonPressType;
 
 void init_led(){
-    gpio_init(PIN_LED);
-    gpio_set_dir(PIN_LED, true);
-    gpio_put(PIN_LED, 0);
+    for (size_t i = 0; i < 4; i++){
+      gpio_init(PIN_LED+i);
+      gpio_set_dir(PIN_LED+i, GPIO_OUT);
+      gpio_put(PIN_LED+i, 0);
+    }    
 }
 
 void led_blink_fast(int cnt){
@@ -179,12 +190,14 @@ void led_blink_fast(int cnt){
 }
 
 void led_blink_slow(int cnt){
-    for (size_t i = 0; i < cnt; i++){
-        gpio_put(PIN_LED, 1);
-        sleep_ms(USEC_PER_MSEC*0.2);
-        gpio_put(PIN_LED, 0);        
-        sleep_ms(USEC_PER_MSEC*0.4);
-    }
+  gpio_put(PIN_LED+cnt, 1);
+  for (size_t i = 0; i < cnt; i++){
+      gpio_put(PIN_LED, 1);
+      sleep_ms(USEC_PER_MSEC*0.2);
+      gpio_put(PIN_LED, 0);        
+      sleep_ms(USEC_PER_MSEC*0.4);
+  }
+  gpio_put(PIN_LED+cnt, 0);
 }
 
 t_buttonPressType detectButtonPress(void){
@@ -209,6 +222,13 @@ t_buttonPressType detectButtonPress(void){
             ret = kButtonPressTypeMid;
         }else {
             ret = kButtonPressTypeLong;
+        }
+
+        if (!gpio_get(PIN_BUTTON2)){
+          return kButtonPressTypeMid;
+        }
+        if (!gpio_get(PIN_BUTTON3)){
+          return kButtonPressTypeLong;
         }
 
         if (lastButtonState){
@@ -389,11 +409,11 @@ int main(){
                 gSWDModeIsSpam = !gSWDModeIsSpam;
                 
             }else if (bpress == kButtonPressTypeMid){
-                gWantTristarDFU = true;
                 gWantTristarReset = true;
                 colobus_perform_wake();
             }else if (bpress == kButtonPressTypeLong){
                 gWantTristarReset = true;
+                gWantTristarDFU = true;
                 colobus_perform_wake();
             }
         
@@ -401,6 +421,10 @@ int main(){
                 gpio_put(PIN_LED, 1);
             }
         }
+        gpio_put(PIN_LED1, !gSWDModeIsSpam);
+        gpio_put(PIN_LED2, gWantTristarReset);
+        gpio_put(PIN_LED3, gWantTristarDFU);
+        
         colobus_wake_runloop();
         if (gWantDCSDInit){
             if (gWantDCSDInit > 0){
