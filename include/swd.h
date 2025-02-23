@@ -4,11 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/*
-    SWD_CLK = swd_base + 0
-    SWD_IO  = swd_base + 1
-*/
-void swd_init(int swd_base);
+void swd_init(int swd_io, int swd_clk);
 void swd_gpio_configure(int pin_swdio);
 void swd_deinit();
 

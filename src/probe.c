@@ -54,7 +54,7 @@ error:
 }
 
 #pragma mark public
-void probe_task(){
+void probe_task(bool dontRunSWDCommands){
     int err = 0;
     uint32_t cmdsReadSize = 0;
     uint32_t cmdsCnt = 0;
@@ -62,8 +62,9 @@ void probe_task(){
     cassure(tud_vendor_available());
 
     cassure(cmdsReadSize = tud_vendor_read(gCmands, sizeof(gCmands)));
-    cmdsCnt = cmdsReadSize/sizeof(*gCmands);
+    cassure(dontRunSWDCommands == false);
 
+    cmdsCnt = cmdsReadSize/sizeof(*gCmands);
     for (size_t i = 0; i < cmdsCnt; i++){
         gCmands[i].res = processCmd(&gCmands[i]);
     }

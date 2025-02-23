@@ -55,7 +55,6 @@ doWriteByte:
     NOP                         [7]
     NOP                         [1]
     JMP !OSRE, writeByte
-    NOP
 finish:
 
 .wrap_target

@@ -4,6 +4,7 @@
 #include "crc.h"
 #include "probe.h"
 #include "tusb_config.h"
+#include "puart.h"
 
 #include <pico.h>
 #include <pico/multicore.h>
@@ -11,6 +12,7 @@
 #include <hardware/gpio.h>
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
+#include <pico/bootrom.h>
 #include "bsp/board.h"
 
 #include <tusb.h>
@@ -22,10 +24,13 @@
 
 #define ENABLE_BOOTSEL_BUTTON_CHECKING 
 
+#define SPAM_ATTEMPTS_TIMEOUT 2000
+
 #define USEC_PER_SEC  1000000L
 #define USEC_PER_MSEC    1000L
 
-#define PIN_SDQ 3
+
+#define IS_COLOBUS_HARDWARE
 
 #define PIN_BUTTON1 5
 #define PIN_BUTTON2 6
@@ -37,9 +42,17 @@
 #define PIN_LED3  28
 
 
-#define PIN_SWDBASE 2
-#define PIN_SWDCLK  PIN_SWDBASE+0
-#define PIN_SWDIO   PIN_SWDBASE+1
+#define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 2)
+
+#define PIN_SWDIO_INVERTED(isInverted)      (isInverted ? 3 : 2)
+#define PIN_SWDCLK_INVERTED(isInverted)     (isInverted ? 2 : 3)
+
+#define PIN_PUART_TX_INVERTED(isInverted)   (isInverted ? 3 : 2)
+#define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 2 : 3)
+
+
+
+#define ARRAYOF(a) (sizeof(a)/sizeof(*a))
 
 extern int main(void);
 
@@ -51,20 +64,30 @@ extern int main(void);
 #define ITF_SERIAL0 0
 #define ITF_SERIAL1 1
 
+#define ITF_UART_PRIMARY    ((gActiveMode == kCOLOBUS_MODE_USB_UART2_UART) ? ITF_SERIAL1 : ITF_SERIAL0)
+#define ITF_UART_SECONDARY  ((gActiveMode == kCOLOBUS_MODE_USB_UART2_UART) ? ITF_SERIAL0 : ITF_SERIAL1)
+
 static t_colobus_mode gActiveMode = kCOLOBUS_MODE_DEFAULT;
 static bool gWantTristarReset = false;
 static bool gWantTristarDFU = false;
 
-static int gWantDCSDInit = 0;
 static uint64_t gWantSWDInitTime = 0;
+static uint64_t gLastLightningCheckin = 0;
+static uint32_t gSpamFails = 0;
 
 static bool gDCSDIsInited = false;
+static bool gPUARTIsInited = false;
 static bool gSWDIsInited = false;
 static volatile bool gIsSWDTaskActive = false;
+
+static int gWantPUARTInit = 0;
+static int gWantDCSDInit = 0;
+static bool gSWDWantDeinit = false;
 
 static int gDPIDR = 0;
 
 static bool gSWDModeIsSpam = true;
+static bool gCableIsInverted = false;
 
 void dcsd_init(void){
     if (!gDCSDIsInited){
@@ -87,26 +110,36 @@ void lightning_callback(const void *buf, size_t bufSize){
     uint32_t *req32 = (uint32_t*)buf;
 
     if (bufSize == 4 && req8[0] == TRISTAR_REQUEST_GET_CABLE_TYPE){
-        gSWDIsInited = false;
-        lightning_gpio_configure(PIN_SDQ);
+        lightning_gpio_configure(PIN_SDQ_INVERTED(gCableIsInverted));
+        gSWDWantDeinit = false;
 
         if (gWantTristarReset){
-            lightning_write_nonblocking(colobus_cable_type_responses[kCOLOBUS_MODE_RESET], sizeof(colobus_cable_type_responses[kCOLOBUS_MODE_RESET]));
+            lightning_write_blocking(colobus_cable_type_responses[kCOLOBUS_MODE_RESET], sizeof(colobus_cable_type_responses[kCOLOBUS_MODE_RESET]));
         }else if (gWantTristarDFU){
-            lightning_write_nonblocking(colobus_cable_type_responses[kCOLOBUS_MODE_DFU], sizeof(colobus_cable_type_responses[kCOLOBUS_MODE_DFU]));
+            lightning_write_blocking(colobus_cable_type_responses[kCOLOBUS_MODE_DFU], sizeof(colobus_cable_type_responses[kCOLOBUS_MODE_DFU]));
         }else{
-            lightning_write_nonblocking(colobus_cable_type_responses[gActiveMode], sizeof(colobus_cable_type_responses[gActiveMode]));
+            lightning_write_blocking(colobus_cable_type_responses[gActiveMode], sizeof(colobus_cable_type_responses[gActiveMode]));
+
+            gLastLightningCheckin = time_us_64();
 
             if (gActiveMode == kCOLOBUS_MODE_USB_UART ||
+                gActiveMode == kCOLOBUS_MODE_USB_UART2_UART ||
                 gActiveMode == kCOLOBUS_MODE_USB_JTAG_UART){
                 gWantDCSDInit = 1;
+                if (gActiveMode == kCOLOBUS_MODE_USB_UART2_UART){
+                    gWantPUARTInit = 1;
+                }else{
+                    gWantPUARTInit = -1;
+                }
             }else{
                 gWantDCSDInit = -1;
+                gWantPUARTInit = -1;
             }
 
             if (gActiveMode == kCOLOBUS_MODE_USB_JTAG_UART ||
                 gActiveMode == kCOLOBUS_MODE_USB_JTAG_SPAM){
                 gWantSWDInitTime = time_us_64() + USEC_PER_MSEC*1;
+                gSpamFails = 0;
             }
         }
 
@@ -158,9 +191,23 @@ void button_init(){
   }
 }
 
+bool button_get_edge(int btn){
+    btn -= PIN_BUTTON1;
+    static bool lastState[3] = {true, true, true};
+    bool ret = false;
+    if (btn < 0 || btn >= ARRAYOF(lastState)) return false;
+    bool curState = gpio_get(PIN_BUTTON1 + btn);
+    if (!curState && lastState[btn]) ret = true;
+    lastState[btn] = curState;
+    return ret;
+}
+
 bool get_button(void){
     if (get_my_bootsel_button()) return true;
+#ifndef IS_COLOBUS_HARDWARE
     return !gpio_get(PIN_BUTTON1);
+#endif
+    return false;
 }
 
 typedef enum {
@@ -224,10 +271,15 @@ t_buttonPressType detectButtonPress(void){
             ret = kButtonPressTypeLong;
         }
 
-        if (!gpio_get(PIN_BUTTON2)){
+        if (button_get_edge(PIN_BUTTON1)){
+          return kButtonPressTypeShort;
+        }
+
+        if (button_get_edge(PIN_BUTTON2)){
           return kButtonPressTypeMid;
         }
-        if (!gpio_get(PIN_BUTTON3)){
+
+        if (button_get_edge(PIN_BUTTON3)){
           return kButtonPressTypeLong;
         }
 
@@ -262,12 +314,12 @@ void colobus_wake_runloop(){
             tight_loop_contents();
         }
         gColobusWantsWake = false;
-        gSWDIsInited = false;
-        gpio_init(PIN_SDQ);
-        gpio_set_dir(PIN_SDQ, GPIO_OUT);
-        gpio_put(PIN_SDQ, 0);
-        sleep_ms(10);
-        gpio_set_dir(PIN_SDQ, GPIO_IN);
+        gSWDWantDeinit = false;
+        gpio_init(PIN_SDQ_INVERTED(gCableIsInverted));
+        gpio_set_dir(PIN_SDQ_INVERTED(gCableIsInverted), GPIO_OUT);
+        gpio_put(PIN_SDQ_INVERTED(gCableIsInverted), 0);
+        sleep_ms(50);
+        gpio_set_dir(PIN_SDQ_INVERTED(gCableIsInverted), GPIO_IN);
     }
 }
 
@@ -317,6 +369,14 @@ int task_spam(){
                     }
                 }
             }
+        }else{
+            uint32_t data = 0;
+            ack = SWD_DP_read_IDCODE(&data);
+            if (ack == SWD_RSP_OK){
+                gDPIDR = data;
+            }else{
+                gDPIDR = 0;
+            }
         }
 
         if (uart_ctrl_reg){
@@ -342,25 +402,24 @@ error:
 }
 
 void task_swd(){
-    static uint32_t sSpamFails = 0;
     gIsSWDTaskActive = true;
 
+    probe_task(gSWDModeIsSpam);
     if (gSWDModeIsSpam){
-        if (!task_spam()){
-            sSpamFails = 0;
-        }else{
-            if (sSpamFails++ >= 10){
-                gWantSWDInitTime = time_us_64() + 10*USEC_PER_MSEC;
-                /*
-                    One tristar poll cycle is ~7.6ms.
-                */
-                gSWDIsInited = false;
-                sSpamFails = 0;
-            }            
-        }
+        if (gSpamFails < SPAM_ATTEMPTS_TIMEOUT){
+            if (!task_spam()){
+                gSpamFails = 0;
+            }else{
+                if ((gSpamFails++) & 0xF >= 10){
+                    gWantSWDInitTime = time_us_64() + 10*USEC_PER_MSEC;
+                    /*
+                        One tristar poll cycle is ~7.6ms.
+                    */
+                }            
+            }
+        }        
     }else{
-        probe_task();
-        sSpamFails = 0;
+        gSpamFails = 0;
     }
     gIsSWDTaskActive = false;
 }
@@ -372,14 +431,32 @@ void usb_loop() {
         tud_task();
 
         if (gDCSDIsInited){
-            while (uart_is_readable(DCSD_UART) && tud_cdc_n_write_available(ITF_SERIAL0)) {
-                tud_cdc_n_write_char(ITF_SERIAL0, uart_getc(DCSD_UART));
+            int itf_primary = ITF_UART_PRIMARY;
+            while (uart_is_readable(DCSD_UART) && tud_cdc_n_write_available(itf_primary)) {
+                tud_cdc_n_write_char(itf_primary, uart_getc(DCSD_UART));
             }
             
-            if (tud_cdc_n_available(ITF_SERIAL0)) {
-                uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(ITF_SERIAL0));
+            if (tud_cdc_n_available(itf_primary)) {
+                uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_primary));
             }
-            tud_cdc_n_write_flush(ITF_SERIAL0);
+            tud_cdc_n_write_flush(itf_primary);
+        }        
+
+        if (gPUARTIsInited){
+            int itf_tgt = ITF_SERIAL0;
+            bool found = false;
+            while (puart_is_readable() && tud_cdc_n_write_available(itf_tgt)) {
+                tud_cdc_n_write_char(itf_tgt, puart_getc());
+                found = true;
+            }
+            if (found){
+                reset_usb_boot(0,0);
+            }
+            
+            // if (tud_cdc_n_available(itf_tgt)) {
+            //     uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_tgt));
+            // }
+            tud_cdc_n_write_flush(itf_tgt);
         }
     }
 }
@@ -391,30 +468,39 @@ int main(){
     multicore_launch_core1(usb_loop);
 
 
-    swd_init(PIN_SWDBASE);
     button_init();
     colobus_init();
     colobus_set_active_mode(kCOLOBUS_MODE_DEFAULT);
     lightning_rx_callback_register(lightning_callback);
-    lightning_init(PIN_SDQ);
-    colobus_perform_wake();
 
     init_led();
+
+    gCableIsInverted = button_get_edge(PIN_BUTTON1);
+
+    lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
+
+    colobus_perform_wake();
 
     while (1){
         t_buttonPressType bpress = detectButtonPress();
         if (bpress){
             led_blink_slow(bpress);
             if (bpress == kButtonPressTypeShort){
-                gSWDModeIsSpam = !gSWDModeIsSpam;
+                gSWDModeIsSpam = !gSWDModeIsSpam;                
                 
             }else if (bpress == kButtonPressTypeMid){
                 gWantTristarReset = true;
                 colobus_perform_wake();
+
             }else if (bpress == kButtonPressTypeLong){
-                gWantTristarReset = true;
-                gWantTristarDFU = true;
-                colobus_perform_wake();
+                if (gWantTristarReset){
+                    gWantTristarReset = false;
+                    gWantTristarDFU = false;
+                }else{
+                    gWantTristarReset = true;
+                    gWantTristarDFU = true;
+                    colobus_perform_wake();
+                }
             }
         
             if (!gSWDModeIsSpam){
@@ -422,8 +508,8 @@ int main(){
             }
         }
         gpio_put(PIN_LED1, !gSWDModeIsSpam);
-        gpio_put(PIN_LED2, gWantTristarReset);
-        gpio_put(PIN_LED3, gWantTristarDFU);
+        gpio_put(PIN_LED2, gCableIsInverted);
+        gpio_put(PIN_LED3, gWantTristarReset);
         
         colobus_wake_runloop();
         if (gWantDCSDInit){
@@ -435,15 +521,34 @@ int main(){
             gWantDCSDInit = 0;
         }
 
+        if (gWantPUARTInit){
+            if (gWantPUARTInit > 0){
+                puart_init(PIN_PUART_RX_INVERTED(gCableIsInverted),PIN_PUART_TX_INVERTED(gCableIsInverted));
+                gPUARTIsInited = true;
+            }else{
+                gPUARTIsInited = false;
+                puart_deinit();
+            }
+            gWantPUARTInit = 0;
+        }
+
+        if (gSWDWantDeinit){
+            gSWDWantDeinit = false;
+            gSWDIsInited = false;
+            swd_deinit();
+        }
+
         if (gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
-            swd_gpio_configure(PIN_SDQ);
+            if (!gSWDIsInited){
+                swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
+                gSWDIsInited = true;
+            }
             swd_reset();
             gWantSWDInitTime = 0;
             gDPIDR = 0;
-            gSWDIsInited = true;
         }
 
-        if (gSWDIsInited){
+        if (gWantSWDInitTime == 0 && gSWDIsInited){
             task_swd();
         }
     }

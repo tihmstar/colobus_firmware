@@ -23,18 +23,15 @@
 #define PIN_SWDCLK_OFFSET   0
 #define PIN_SWDIO_OFFSET    1
 
-static int gSWDBasePin = -1;
-
 static int gSWD_pio_pc = -1;
 
 #pragma mark public
 
-void swd_init(int swd_base){
-    gSWDBasePin = swd_base;
-    pio_gpio_init(SWD_PIO, swd_base + PIN_SWDCLK_OFFSET);
-    pio_gpio_init(SWD_PIO, swd_base + PIN_SWDIO_OFFSET);
-    gpio_set_pulls(swd_base + PIN_SWDCLK_OFFSET, false, true);
-    gpio_set_pulls(swd_base + PIN_SWDIO_OFFSET, true, false);
+void swd_init(int swd_io, int swd_clk){
+    pio_gpio_init(SWD_PIO, swd_clk);
+    pio_gpio_init(SWD_PIO, swd_io);
+    gpio_set_pulls(swd_clk, false, true);
+    gpio_set_pulls(swd_io, true, false);
 
 
     if (gSWD_pio_pc == -1){
@@ -43,14 +40,14 @@ void swd_init(int swd_base){
         gSWD_pio_pc = pio_add_program(SWD_PIO, &swd_program);
         pio_sm_config c = swd_program_get_default_config(gSWD_pio_pc);
 
-        sm_config_set_in_pins(&c, swd_base+PIN_SWDIO_OFFSET);
-        sm_config_set_out_pins(&c, swd_base+PIN_SWDIO_OFFSET, 1);
+        sm_config_set_in_pins(&c, swd_io);
+        sm_config_set_out_pins(&c, swd_io, 1);
 
-        sm_config_set_sideset_pins(&c, swd_base+PIN_SWDCLK_OFFSET);
+        sm_config_set_sideset_pins(&c, swd_clk);
         sm_config_set_sideset(&c, 1, false, false);
-        pio_sm_set_consecutive_pindirs(SWD_PIO, SWD_SM, swd_base+PIN_SWDCLK_OFFSET, 1, true);
+        pio_sm_set_consecutive_pindirs(SWD_PIO, SWD_SM, swd_clk, 1, true);
 
-        sm_config_set_set_pins(&c, swd_base+PIN_SWDIO_OFFSET, 1);
+        sm_config_set_set_pins(&c, swd_io, 1);
 
         sm_config_set_in_shift(&c, true, true, 32);
         sm_config_set_out_shift(&c, true, true, 8);

@@ -48,6 +48,7 @@ add_executable(${PROJECT_NAME}
     src/swd.c
     src/tristar.c
     src/probe.c
+    src/puart.c
     src/usb_descriptors.c
     ${SOURCES}
 )
@@ -75,3 +76,4 @@ target_link_libraries(${PROJECT_NAME}
 
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/lightning.pio)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/swd.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/uart.pio)

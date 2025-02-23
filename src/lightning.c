@@ -25,16 +25,18 @@ static int gLightning_tx_pio_pc = -1;
 
 static int gRxDMAChannel = -1;
 static int gTxDMAChannel = -1;
-static uint8_t gRxBuf[0x20] = {};
 static lightning_rx_cb gUserRxCB = NULL;
+static uint8_t gRxBuf[0x40] = {};
 
 #pragma mark private
 static void rx_irq_handler(void){
-    dma_channel_abort(gRxDMAChannel);
+    // dma_channel_abort(gRxDMAChannel);
     dma_channel_hw_t *dmachan =  dma_channel_hw_addr(gRxDMAChannel);
     size_t didRead = dmachan->write_addr - (uint32_t)gRxBuf;
     if (gUserRxCB && didRead) gUserRxCB(gRxBuf, didRead);
+    dmachan->transfer_count = sizeof(gRxBuf);
     dmachan->al2_write_addr_trig = (uint32_t)gRxBuf;
+    dma_hw->ints0 = 1u << gRxDMAChannel;
     pio_interrupt_clear(LIGHTNING_PIO, 0);
 }
 
@@ -92,7 +94,6 @@ void lightning_init(int pin_sdq){
         sm_config_set_sideset_pins(&c, pin_sdq);
         sm_config_set_sideset(&c, 2, true, true);
         sm_config_set_set_pins(&c, pin_sdq, 1);
-        sm_config_set_in_shift(&c, true, true, 8);
         sm_config_set_out_shift(&c, true, true, 8);
         sm_config_set_jmp_pin(&c, pin_sdq);
 
@@ -102,6 +103,7 @@ void lightning_init(int pin_sdq){
     if (gTxDMAChannel == -1){
         gTxDMAChannel = dma_claim_unused_channel(true);
     }
+    
     if (gRxDMAChannel == -1){
         gRxDMAChannel = dma_claim_unused_channel(true);
 
@@ -125,33 +127,45 @@ void lightning_init(int pin_sdq){
         irq_set_exclusive_handler(PIO0_IRQ_0, rx_irq_handler);
         pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + LIGHTNING_RX_SM), true);
         irq_set_enabled(PIO0_IRQ_0, true);
+
+        irq_set_exclusive_handler(DMA_IRQ_0, rx_irq_handler);   // Set interrupt handler
+        dma_channel_set_irq0_enabled(gRxDMAChannel, true);      // Enable IRQ for DMA
+        irq_set_enabled(DMA_IRQ_0, true);                       // Enable the IRQ
     }
 }
 
 void lightning_cleanup(void){
-    if (gRxDMAChannel != -1){
-        irq_set_enabled(PIO0_IRQ_0, false);
-        pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + LIGHTNING_RX_SM), false);
-        irq_remove_handler(PIO0_IRQ_0, rx_irq_handler);
-
-        dma_channel_abort(gRxDMAChannel);
-        dma_channel_unclaim(gRxDMAChannel);
-        gRxDMAChannel = -1;
-    }
-    if (gTxDMAChannel != -1){
-        dma_channel_abort(gTxDMAChannel);
-        dma_channel_unclaim(gTxDMAChannel);
-        gTxDMAChannel = -1;
-    }
     if (gLightning_rx_pio_pc != -1){
         pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_RX_SM, false);
         pio_remove_program(LIGHTNING_PIO, &lightning_rx_program, gLightning_rx_pio_pc);
         gLightning_rx_pio_pc = -1;
     }
+    
     if (gLightning_tx_pio_pc != -1){
         pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_TX_SM, false);
         pio_remove_program(LIGHTNING_PIO, &lightning_tx_program, gLightning_tx_pio_pc);
         gLightning_tx_pio_pc = -1;
+    }
+
+    irq_set_enabled(PIO0_IRQ_0, false);
+    pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + LIGHTNING_RX_SM), false);
+    irq_remove_handler(PIO0_IRQ_0, rx_irq_handler);
+
+
+    {
+        int dmaActiveChannelsMask = 0;
+
+        if (gTxDMAChannel != -1) dmaActiveChannelsMask |= 1u << gTxDMAChannel;
+        if (gRxDMAChannel != -1) dmaActiveChannelsMask |= 1u << gRxDMAChannel;
+
+        dma_hw->abort = dmaActiveChannelsMask;
+
+        if (gTxDMAChannel != -1) while (dma_hw->ch[gTxDMAChannel].ctrl_trig & DMA_CH0_CTRL_TRIG_BUSY_BITS) tight_loop_contents();
+        if (gRxDMAChannel != -1) while (dma_hw->ch[gRxDMAChannel].ctrl_trig & DMA_CH0_CTRL_TRIG_BUSY_BITS) tight_loop_contents();
+
+        dma_unclaim_mask(dmaActiveChannelsMask);
+        gTxDMAChannel = -1;
+        gRxDMAChannel = -1;
     }
 }
 
