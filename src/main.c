@@ -477,6 +477,12 @@ int main(){
 
     gCableIsInverted = button_get_edge(PIN_BUTTON1);
 
+    bool isKisMode = false;
+    if (button_get_edge(PIN_BUTTON2)){
+      colobus_set_active_mode(kCOLOBUS_MODE_KIS_UART);
+      isKisMode = true;
+    }
+    
     lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
 
     colobus_perform_wake();
@@ -486,9 +492,17 @@ int main(){
         if (bpress){
             led_blink_slow(bpress);
             if (bpress == kButtonPressTypeShort){
-                gSWDModeIsSpam = !gSWDModeIsSpam;                
+                gSWDModeIsSpam = !gSWDModeIsSpam;      
+                if (isKisMode){
+                  if (gSWDModeIsSpam){
+                    colobus_set_active_mode(kCOLOBUS_MODE_KIS_UART);
+                  }else{
+                    colobus_set_active_mode(kCOLOBUS_MODE_DEFAULT);
+                  }    
+                  colobus_perform_wake();              
+                }          
                 
-            }else if (bpress == kButtonPressTypeMid){
+            }else if (bpress == kButtonPressTypeMid && !isKisMode){
                 gWantTristarReset = true;
                 colobus_perform_wake();
 
@@ -507,8 +521,12 @@ int main(){
                 gpio_put(PIN_LED, 1);
             }
         }
-        gpio_put(PIN_LED1, !gSWDModeIsSpam);
-        gpio_put(PIN_LED2, gCableIsInverted);
+        gpio_put(PIN_LED1, !gSWDModeIsSpam || isKisMode);
+        if (isKisMode){
+          gpio_put(PIN_LED2, gSWDModeIsSpam);
+        }else{
+          gpio_put(PIN_LED2, gCableIsInverted);
+        }
         gpio_put(PIN_LED3, gWantTristarReset);
         
         colobus_wake_runloop();
@@ -538,7 +556,7 @@ int main(){
             swd_deinit();
         }
 
-        if (gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
+        if (!isKisMode && gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
             if (!gSWDIsInited){
                 swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
                 gSWDIsInited = true;
