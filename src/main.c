@@ -63,6 +63,7 @@ extern int main(void);
 
 #define ITF_SERIAL0 0
 #define ITF_SERIAL1 1
+#define ITF_CONTROL 2
 
 #define ITF_UART_PRIMARY    ((gActiveMode == kCOLOBUS_MODE_USB_UART2_UART) ? ITF_SERIAL1 : ITF_SERIAL0)
 #define ITF_UART_SECONDARY  ((gActiveMode == kCOLOBUS_MODE_USB_UART2_UART) ? ITF_SERIAL0 : ITF_SERIAL1)
@@ -457,6 +458,42 @@ void usb_loop() {
             //     uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_tgt));
             // }
             tud_cdc_n_write_flush(itf_tgt);
+        }
+
+        {
+          static char line[0x100] = {};
+          static size_t didRead = 0;
+          bool didBreak = false;
+          if (didRead >= sizeof(line)-1){
+            didRead = 0;
+            memset(line, 0, sizeof(line));
+          }
+          for (; didRead < sizeof(line)-1; didRead++){
+            if (!tud_cdc_n_available(ITF_CONTROL)) break;
+            line[didRead] = tud_cdc_n_read_char(ITF_CONTROL);
+            tud_cdc_n_write_char(ITF_CONTROL, line[didRead]);
+            tud_cdc_n_write_flush(ITF_CONTROL);
+            if (line[didRead] == '\r') didRead--;
+            if (line[didRead] == '\n'){
+              didBreak = true;
+              break;
+            }
+          }
+          if (didBreak){
+            line[didRead] = '\0';
+            if (!strcmp(line, "reset")){
+              tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\n");
+              gWantTristarReset = true;
+              colobus_perform_wake();
+            } else{
+              tud_cdc_n_write_str(ITF_CONTROL, "got unrecognised command: '");
+              tud_cdc_n_write_str(ITF_CONTROL, line);
+              tud_cdc_n_write_str(ITF_CONTROL, "'\n");
+            }
+            didRead = 0;
+            memset(line, 0, sizeof(line));
+            tud_cdc_n_write_flush(ITF_CONTROL);
+          }
         }
     }
 }

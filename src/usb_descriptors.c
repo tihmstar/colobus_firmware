@@ -56,12 +56,18 @@ uint8_t const * tud_descriptor_device_cb(void){
 #define EPNUM_JTAG_OUT              0x07
 #define EPNUM_JTAG_IN               0x88
 
+#define EPNUM_CONTROL_NOTIF         0x89
+#define EPNUM_CONTROL_OUT           0x0a
+#define EPNUM_CONTROL_IN            0x8b
+
 enum{
   ITF_NUM_CDC_UART = 0,
   ITF_NUM_CDC_UART_DATA,
   ITF_NUM_CDC_DOCKCHANNEL,
   ITF_NUM_CDC_DOCKCHANNEL_DATA,
   ITF_NUM_JTAG,
+  ITF_NUM_CDC_CONTROL,
+  ITF_NUM_CDC_CONTROL_DATA,
 
   ITF_NUM_TOTAL
 };
@@ -78,6 +84,10 @@ uint8_t const desc_configuration[] ={
 
     // 3 VENDOR: JTAG
     TUD_VENDOR_DESCRIPTOR(ITF_NUM_JTAG, 0, EPNUM_JTAG_OUT, EPNUM_JTAG_IN, MAX_PACKET_SIZE),
+
+    // 4 CDC: CONTROL
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_CONTROL, 7, EPNUM_CONTROL_NOTIF, 8, EPNUM_CONTROL_OUT, EPNUM_CONTROL_IN, MAX_PACKET_SIZE),
+
 };
 
 
@@ -102,6 +112,7 @@ char const* string_desc_arr [] ={
   "colobus_serial0",             // 4: uart
   "colobus_serial1",             // 5: dockchannel
   "colobus_jtag",                // 6: jtag
+  "colobus_control",             // 7: control
 };
 
 uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid){
