@@ -5,6 +5,7 @@
 #include "probe.h"
 #include "tusb_config.h"
 #include "puart.h"
+#include "usbhub.h"
 
 #include <pico.h>
 #include <pico/multicore.h>
@@ -12,6 +13,7 @@
 #include <hardware/gpio.h>
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
+#include <hardware/watchdog.h>
 #include <pico/bootrom.h>
 #include "bsp/board.h"
 
@@ -21,6 +23,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #define ENABLE_BOOTSEL_BUTTON_CHECKING 
 
@@ -36,10 +39,9 @@
 #define PIN_BUTTON2 6
 #define PIN_BUTTON3 7
 
-#define PIN_LED   25
-#define PIN_LED1  26
-#define PIN_LED2  27
-#define PIN_LED3  28
+#define PIN_LED1  40
+#define PIN_LED2  39
+#define PIN_LED3  38
 
 
 #define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 2)
@@ -220,32 +222,37 @@ typedef enum {
     kButtonPressLast,
 } t_buttonPressType;
 
+static inline void init_led_pin(uint32_t pin_led){
+  gpio_init(pin_led);
+  gpio_set_dir(pin_led, GPIO_OUT);
+  gpio_put(pin_led, 0);
+}
+
+
 void init_led(){
-    for (size_t i = 0; i < 4; i++){
-      gpio_init(PIN_LED+i);
-      gpio_set_dir(PIN_LED+i, GPIO_OUT);
-      gpio_put(PIN_LED+i, 0);
-    }    
+  init_led_pin(PIN_LED1);
+  init_led_pin(PIN_LED2);
+  init_led_pin(PIN_LED3);
 }
 
-void led_blink_fast(int cnt){
-    for (size_t i = 0; i < cnt; i++){
-        gpio_put(PIN_LED, 1);
-        sleep_ms(USEC_PER_MSEC*0.01);
-        gpio_put(PIN_LED, 0);        
-        sleep_ms(USEC_PER_MSEC*0.1);
-    }
-}
-
-void led_blink_slow(int cnt){
-  gpio_put(PIN_LED+cnt, 1);
-  for (size_t i = 0; i < cnt; i++){
-      gpio_put(PIN_LED, 1);
-      sleep_ms(USEC_PER_MSEC*0.2);
-      gpio_put(PIN_LED, 0);        
-      sleep_ms(USEC_PER_MSEC*0.4);
+void led_blink_id(int id){
+  int pin = 0;
+  switch (id) {
+    case 1:
+      pin = PIN_LED1;
+      break;
+    case 2:
+      pin = PIN_LED2;
+      break;
+    case 3:
+      pin = PIN_LED3;
+      break;
+    default:
+      return;
   }
-  gpio_put(PIN_LED+cnt, 0);
+  gpio_put(pin, 1);
+  sleep_ms(USEC_PER_MSEC*0.5);
+  gpio_put(pin, 0);
 }
 
 t_buttonPressType detectButtonPress(void){
@@ -285,9 +292,6 @@ t_buttonPressType detectButtonPress(void){
         }
 
         if (lastButtonState){
-            if (ret != lastRet){
-                led_blink_fast(ret);
-            }
             if (lastRet == kButtonPressLast-1){
                 ret = kButtonPressTypeNone;
             }else{
@@ -425,90 +429,78 @@ void task_swd(){
     gIsSWDTaskActive = false;
 }
 
-void usb_loop() {
-    tusb_init();
-
-    while (1){
-        tud_task();
-
-        if (gDCSDIsInited){
-            int itf_primary = ITF_UART_PRIMARY;
-            while (uart_is_readable(DCSD_UART) && tud_cdc_n_write_available(itf_primary)) {
-                tud_cdc_n_write_char(itf_primary, uart_getc(DCSD_UART));
-            }
-            
-            if (tud_cdc_n_available(itf_primary)) {
-                uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_primary));
-            }
-            tud_cdc_n_write_flush(itf_primary);
-        }        
-
-        if (gPUARTIsInited){
-            int itf_tgt = ITF_SERIAL0;
-            bool found = false;
-            while (puart_is_readable() && tud_cdc_n_write_available(itf_tgt)) {
-                tud_cdc_n_write_char(itf_tgt, puart_getc());
-                found = true;
-            }
-            if (found){
-                reset_usb_boot(0,0);
-            }
-            
-            // if (tud_cdc_n_available(itf_tgt)) {
-            //     uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_tgt));
-            // }
-            tud_cdc_n_write_flush(itf_tgt);
-        }
-
-        {
-          static char line[0x100] = {};
-          static size_t didRead = 0;
-          bool didBreak = false;
-          if (didRead >= sizeof(line)-1){
-            didRead = 0;
-            memset(line, 0, sizeof(line));
-          }
-          for (; didRead < sizeof(line)-1; didRead++){
-            if (!tud_cdc_n_available(ITF_CONTROL)) break;
-            line[didRead] = tud_cdc_n_read_char(ITF_CONTROL);
-            tud_cdc_n_write_char(ITF_CONTROL, line[didRead]);
-            tud_cdc_n_write_flush(ITF_CONTROL);
-            if (line[didRead] == '\r') didRead--;
-            if (line[didRead] == '\n'){
-              didBreak = true;
-              break;
-            }
-          }
-          if (didBreak){
-            line[didRead] = '\0';
-            if (!strcmp(line, "reset")){
-              tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\n");
-              gWantTristarReset = true;
-              colobus_perform_wake();
-            } else{
-              tud_cdc_n_write_str(ITF_CONTROL, "got unrecognised command: '");
-              tud_cdc_n_write_str(ITF_CONTROL, line);
-              tud_cdc_n_write_str(ITF_CONTROL, "'\n");
-            }
-            didRead = 0;
-            memset(line, 0, sizeof(line));
-            tud_cdc_n_write_flush(ITF_CONTROL);
-          }
-        }
+void myusb_task(){
+  tud_task();
+  static char line[0x100] = {};
+  static size_t didRead = 0;
+  int didBreak = 0;
+  if (didRead >= sizeof(line)-1){
+    didRead = 0;
+    memset(line, 0, sizeof(line));
+  }
+  for (; didRead < sizeof(line)-1; didRead++){
+    if (!tud_cdc_n_available(ITF_CONTROL)) break;
+    char c = tud_cdc_n_read_char(ITF_CONTROL);
+    if (!isprint(c) && c != '\n' && c != '\r') {
+      didRead--;
+      continue;
     }
+    tud_cdc_n_write_char(ITF_CONTROL, c);
+    line[didRead] = c;
+    tud_cdc_n_write_flush(ITF_CONTROL);
+    if (line[didRead] == '\r'){
+        didBreak = 1;
+    }
+    if (line[didRead] == '\n'){
+      didBreak = 2;
+      break;
+    }
+  }
+  if (didBreak == 1){
+    tud_cdc_n_write_char(ITF_CONTROL, '\n');
+  }
+  while (didRead > 0){
+    char c = line[didRead-1];
+    if (c == '\n' || c == '\r') didRead--;
+    else break;
+  }
+  if (didBreak){
+    line[didRead] = '\0';
+    if (!strcmp(line, "reset")){
+      tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\r\n");
+      gWantTristarReset = true;
+      colobus_perform_wake();
+    } else if (!strcmp(line, "dfu")){
+      tud_cdc_n_write_str(ITF_CONTROL, "entering DFU!\r\n");
+      gWantTristarReset = true;
+      gWantTristarDFU = true;
+      colobus_perform_wake();
+    } else if (!strcmp(line, "rb")){
+      watchdog_reboot(0,0,0);
+    } else if (!strcmp(line, "bl")){
+      reset_usb_boot(0,0);
+    } else {
+      tud_cdc_n_write_str(ITF_CONTROL, "got unrecognised command: '");
+      tud_cdc_n_write_str(ITF_CONTROL, line);
+      tud_cdc_n_write_str(ITF_CONTROL, "'\r\n");
+    }
+    didRead = 0;
+    memset(line, 0, sizeof(line));
+  }
+  tud_cdc_n_write_flush(ITF_CONTROL);
+  tud_task();
 }
 
 int main(){
     board_init(); //THIS IS MANDATORY, OTHERWISE SWD DOESN'T WORK!!!
 
-
-    multicore_launch_core1(usb_loop);
-
+    usbhub_init_default();
 
     button_init();
     colobus_init();
     colobus_set_active_mode(kCOLOBUS_MODE_DEFAULT);
     lightning_rx_callback_register(lightning_callback);
+    tusb_init();
 
     init_led();
 
@@ -525,9 +517,18 @@ int main(){
     colobus_perform_wake();
 
     while (1){
+        {
+          //Boot message
+          static int didgreet = 0;
+          if (!didgreet && time_us_64() > USEC_PER_MSEC*2200){
+            didgreet = 1;
+            tud_cdc_n_write_str(ITF_CONTROL, "\r\nHello from Colobus!\r\n");
+            tud_cdc_n_write_flush(ITF_CONTROL);            
+          }
+        }
         t_buttonPressType bpress = detectButtonPress();
         if (bpress){
-            led_blink_slow(bpress);
+            led_blink_id(bpress);
             if (bpress == kButtonPressTypeShort){
                 gSWDModeIsSpam = !gSWDModeIsSpam;      
                 if (isKisMode){
@@ -552,11 +553,7 @@ int main(){
                     gWantTristarDFU = true;
                     colobus_perform_wake();
                 }
-            }
-        
-            if (!gSWDModeIsSpam){
-                gpio_put(PIN_LED, 1);
-            }
+            }        
         }
         gpio_put(PIN_LED1, !gSWDModeIsSpam || isKisMode);
         if (isKisMode){
@@ -606,5 +603,6 @@ int main(){
         if (gWantSWDInitTime == 0 && gSWDIsInited){
             task_swd();
         }
+        myusb_task();
     }
-}   
+}

@@ -50,6 +50,8 @@ add_executable(${PROJECT_NAME}
     src/probe.c
     src/puart.c
     src/usb_descriptors.c
+    src/usbhub.c
+    src/pio_i2c.c
     ${SOURCES}
 )
 
@@ -68,6 +70,7 @@ target_link_libraries(${PROJECT_NAME}
     pico_multicore
     hardware_pio
     hardware_irq
+    hardware_i2c
     hardware_dma
     tinyusb_device
     tinyusb_board
@@ -77,3 +80,4 @@ target_link_libraries(${PROJECT_NAME}
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/lightning.pio)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/swd.pio)
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/uart.pio)
+pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/i2c.pio)

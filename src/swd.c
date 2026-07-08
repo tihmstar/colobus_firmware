@@ -11,8 +11,6 @@
 #include <stdio.h>
 
 #define SWD_PIO pio1
-#define SWD_SM 0
-
 
 #define ARRAYOF(arr) (sizeof(arr)/sizeof(*arr))
 
@@ -23,6 +21,8 @@
 #define PIN_SWDCLK_OFFSET   0
 #define PIN_SWDIO_OFFSET    1
 
+#pragma mark static vars
+static int gSWD_sm = -1;
 static int gSWD_pio_pc = -1;
 
 #pragma mark public
@@ -33,9 +33,12 @@ void swd_init(int swd_io, int swd_clk){
     gpio_set_pulls(swd_clk, false, true);
     gpio_set_pulls(swd_io, true, false);
 
+    if (gSWD_sm == -1){
+      gSWD_sm = pio_claim_unused_sm(SWD_PIO, true);
+    }
 
     if (gSWD_pio_pc == -1){
-        pio_sm_set_enabled(SWD_PIO, SWD_SM, false);
+        pio_sm_set_enabled(SWD_PIO, gSWD_sm, false);
 
         gSWD_pio_pc = pio_add_program(SWD_PIO, &swd_program);
         pio_sm_config c = swd_program_get_default_config(gSWD_pio_pc);
@@ -45,15 +48,15 @@ void swd_init(int swd_io, int swd_clk){
 
         sm_config_set_sideset_pins(&c, swd_clk);
         sm_config_set_sideset(&c, 1, false, false);
-        pio_sm_set_consecutive_pindirs(SWD_PIO, SWD_SM, swd_clk, 1, true);
+        pio_sm_set_consecutive_pindirs(SWD_PIO, gSWD_sm, swd_clk, 1, true);
 
         sm_config_set_set_pins(&c, swd_io, 1);
 
         sm_config_set_in_shift(&c, true, true, 32);
         sm_config_set_out_shift(&c, true, true, 8);
 
-        pio_sm_init(SWD_PIO, SWD_SM, gSWD_pio_pc + swd_offset_start, &c);
-        pio_sm_set_enabled(SWD_PIO, SWD_SM, true);
+        pio_sm_init(SWD_PIO, gSWD_sm, gSWD_pio_pc + swd_offset_start, &c);
+        pio_sm_set_enabled(SWD_PIO, gSWD_sm, true);
     }
 
     swd_set_freq(1000);
@@ -67,20 +70,23 @@ void swd_gpio_configure(int pin_swdio){
 
 void swd_deinit(){
     if (gSWD_pio_pc != -1){
-        pio_sm_set_enabled(SWD_PIO, SWD_SM, false);
+        pio_sm_set_enabled(SWD_PIO, gSWD_sm, false);
         pio_remove_program(SWD_PIO, &swd_program, gSWD_pio_pc);
         gSWD_pio_pc = -1;
+    }
+    if (gSWD_sm != -1){
+      pio_sm_unclaim(SWD_PIO, gSWD_sm); gSWD_sm = -1;
     }
 }
 
 void swd_set_freq(uint32_t freq_khz){
     float div = ((float)clock_get_hz(clk_sys)/1e3) / (freq_khz<<1);
     if (div < 1) div = 1;
-    pio_sm_set_clkdiv(SWD_PIO, SWD_SM, div);
+    pio_sm_set_clkdiv(SWD_PIO, gSWD_sm, div);
 }
 
 uint32_t swd_get_freq(){
-    uint32_t piocldif = SWD_PIO->sm[SWD_SM].clkdiv;
+    uint32_t piocldif = SWD_PIO->sm[gSWD_sm].clkdiv;
     uint8_t div_frac8 = piocldif >> PIO_SM0_CLKDIV_FRAC_LSB;
     uint32_t div_int = piocldif >> PIO_SM0_CLKDIV_INT_LSB;
     const int frac_bit_count = REG_FIELD_WIDTH(PIO_SM0_CLKDIV_FRAC);
@@ -112,13 +118,13 @@ bool swd_reset(){
 
     {
         dma_channel_config c = dma_channel_get_default_config(dSend);
-        channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, SWD_SM, true)); //false=read data from SM, true=write data to SM
+        channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, gSWD_sm, true)); //false=read data from SM, true=write data to SM
         channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
         channel_config_set_read_increment(&c, true);
         channel_config_set_write_increment(&c, false);
         dma_channel_configure(  dSend,
                                 &c,
-                                &SWD_PIO->txf[SWD_SM],
+                                &SWD_PIO->txf[gSWD_sm],
                                 reqbuf,
                                 sizeof(reqbuf),
                                 true
@@ -161,13 +167,13 @@ int swd_read(uint8_t req, uint32_t *val){
     for (int i=0; i < 5; i++) {
         {
             dma_channel_config c = dma_channel_get_default_config(dSend);
-            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, SWD_SM, true)); //false=read data from SM, true=write data to SM
+            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, gSWD_sm, true)); //false=read data from SM, true=write data to SM
             channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
             channel_config_set_read_increment(&c, true);
             channel_config_set_write_increment(&c, false);
             dma_channel_configure(  dSend,
                                     &c,
-                                    &SWD_PIO->txf[SWD_SM],
+                                    &SWD_PIO->txf[gSWD_sm],
                                     reqbuf,
                                     sizeof(reqbuf),
                                     true
@@ -176,14 +182,14 @@ int swd_read(uint8_t req, uint32_t *val){
 
         {
             dma_channel_config c = dma_channel_get_default_config(dRecv);
-            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, SWD_SM, false)); //false=read data from SM, true=write data to SM
+            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, gSWD_sm, false)); //false=read data from SM, true=write data to SM
             channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
             channel_config_set_read_increment(&c, false);
             channel_config_set_write_increment(&c, true);
             dma_channel_configure(  dRecv,
                                     &c,
                                     rsp,
-                                    &SWD_PIO->rxf[SWD_SM],
+                                    &SWD_PIO->rxf[gSWD_sm],
                                     ARRAYOF(rsp),
                                     true
             );
@@ -232,13 +238,13 @@ int swd_write(uint8_t req, uint32_t val){
     for (int i=0; i < 5; i++) {
         {
             dma_channel_config c = dma_channel_get_default_config(dSend);
-            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, SWD_SM, true)); //false=read data from SM, true=write data to SM
+            channel_config_set_dreq(&c, pio_get_dreq(SWD_PIO, gSWD_sm, true)); //false=read data from SM, true=write data to SM
             channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
             channel_config_set_read_increment(&c, true);
             channel_config_set_write_increment(&c, false);
             dma_channel_configure(  dSend,
                                     &c,
-                                    &SWD_PIO->txf[SWD_SM],
+                                    &SWD_PIO->txf[gSWD_sm],
                                     reqbuf,
                                     sizeof(reqbuf),
                                     true
@@ -246,7 +252,7 @@ int swd_write(uint8_t req, uint32_t val){
         }
 
         dma_channel_wait_for_finish_blocking(dSend);
-        rsp = pio_sm_get_blocking(SWD_PIO, SWD_SM);
+        rsp = pio_sm_get_blocking(SWD_PIO, gSWD_sm);
 
         ack = (rsp>>28) & 0b111;
         if (ack != SWD_RSP_WAIT) break;

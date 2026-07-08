@@ -16,10 +16,9 @@
 #include <string.h>
 
 #define LIGHTNING_PIO pio0
-#define LIGHTNING_RX_SM 0
-#define LIGHTNING_TX_SM 1
 
-
+static int gLightning_rx_sm = -1;
+static int gLightning_tx_sm = -1;
 static int gLightning_rx_pio_pc = -1;
 static int gLightning_tx_pio_pc = -1;
 
@@ -48,8 +47,14 @@ void lightning_gpio_configure(int pin_sdq){
 
 void lightning_init(int pin_sdq){
     lightning_gpio_configure(pin_sdq);
+    if (gLightning_rx_sm == -1){
+      gLightning_rx_sm = pio_claim_unused_sm(LIGHTNING_PIO, true);
+    }
+    if (gLightning_tx_sm == -1){
+      gLightning_tx_sm = pio_claim_unused_sm(LIGHTNING_PIO, true);
+    }
     if (gLightning_rx_pio_pc == -1){
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_RX_SM, false);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_rx_sm, false);
 
         gLightning_rx_pio_pc = pio_add_program(LIGHTNING_PIO, &lightning_rx_program);
         pio_sm_config c = lightning_rx_program_get_default_config(gLightning_rx_pio_pc);
@@ -69,14 +74,14 @@ void lightning_init(int pin_sdq){
         sm_config_set_out_shift(&c, false, false, 8);
         sm_config_set_jmp_pin(&c, pin_sdq);
 
-        pio_sm_set_consecutive_pindirs(LIGHTNING_PIO, LIGHTNING_RX_SM, pin_sdq, 1, false);
+        pio_sm_set_consecutive_pindirs(LIGHTNING_PIO, gLightning_rx_sm, pin_sdq, 1, false);
 
-        pio_sm_init(LIGHTNING_PIO, LIGHTNING_RX_SM, gLightning_rx_pio_pc + lightning_rx_offset_reset, &c);
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_RX_SM, true);
+        pio_sm_init(LIGHTNING_PIO, gLightning_rx_sm, gLightning_rx_pio_pc + lightning_rx_offset_reset, &c);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_rx_sm, true);
     }
 
     if (gLightning_tx_pio_pc == -1){
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_TX_SM, false);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_tx_sm, false);
 
         gLightning_tx_pio_pc = pio_add_program(LIGHTNING_PIO, &lightning_tx_program);
         pio_sm_config c = lightning_tx_program_get_default_config(gLightning_tx_pio_pc);
@@ -97,8 +102,8 @@ void lightning_init(int pin_sdq){
         sm_config_set_out_shift(&c, true, true, 8);
         sm_config_set_jmp_pin(&c, pin_sdq);
 
-        pio_sm_init(LIGHTNING_PIO, LIGHTNING_TX_SM, gLightning_tx_pio_pc + lightning_tx_offset_start, &c);
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_TX_SM, true);
+        pio_sm_init(LIGHTNING_PIO, gLightning_tx_sm, gLightning_tx_pio_pc + lightning_tx_offset_start, &c);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_tx_sm, true);
     }
     if (gTxDMAChannel == -1){
         gTxDMAChannel = dma_claim_unused_channel(true);
@@ -109,14 +114,14 @@ void lightning_init(int pin_sdq){
 
         {
             dma_channel_config c = dma_channel_get_default_config(gRxDMAChannel);
-            channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, LIGHTNING_RX_SM, false)); //false=read data from SM, true=write data to SM
+            channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, gLightning_rx_sm, false)); //false=read data from SM, true=write data to SM
             channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
             channel_config_set_read_increment(&c, false);
             channel_config_set_write_increment(&c, true);
             dma_channel_configure(  gRxDMAChannel,
                                     &c,
                                     gRxBuf,
-                                    &((uint8_t*)(&LIGHTNING_PIO->rxf[LIGHTNING_RX_SM]))[3],
+                                    &((uint8_t*)(&LIGHTNING_PIO->rxf[gLightning_rx_sm]))[3],
                                     sizeof(gRxBuf),
                                     false
             );
@@ -125,7 +130,7 @@ void lightning_init(int pin_sdq){
 
         //Enable irq interrupts for up and down actions.
         irq_set_exclusive_handler(PIO0_IRQ_0, rx_irq_handler);
-        pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + LIGHTNING_RX_SM), true);
+        pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + gLightning_rx_sm), true);
         irq_set_enabled(PIO0_IRQ_0, true);
 
         irq_set_exclusive_handler(DMA_IRQ_0, rx_irq_handler);   // Set interrupt handler
@@ -136,21 +141,27 @@ void lightning_init(int pin_sdq){
 
 void lightning_cleanup(void){
     if (gLightning_rx_pio_pc != -1){
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_RX_SM, false);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_rx_sm, false);
         pio_remove_program(LIGHTNING_PIO, &lightning_rx_program, gLightning_rx_pio_pc);
         gLightning_rx_pio_pc = -1;
     }
     
     if (gLightning_tx_pio_pc != -1){
-        pio_sm_set_enabled(LIGHTNING_PIO, LIGHTNING_TX_SM, false);
+        pio_sm_set_enabled(LIGHTNING_PIO, gLightning_tx_sm, false);
         pio_remove_program(LIGHTNING_PIO, &lightning_tx_program, gLightning_tx_pio_pc);
         gLightning_tx_pio_pc = -1;
     }
 
     irq_set_enabled(PIO0_IRQ_0, false);
-    pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + LIGHTNING_RX_SM), false);
+    pio_set_irq0_source_enabled(LIGHTNING_PIO, (enum pio_interrupt_source)(pis_interrupt0 + gLightning_rx_sm), false);
     irq_remove_handler(PIO0_IRQ_0, rx_irq_handler);
 
+    if (gLightning_rx_sm != -1){
+      pio_sm_unclaim(LIGHTNING_PIO, gLightning_rx_sm); gLightning_rx_sm = -1;
+    }
+    if (gLightning_tx_sm != -1){
+      pio_sm_unclaim(LIGHTNING_PIO, gLightning_tx_sm); gLightning_tx_sm = -1;
+    }
 
     {
         int dmaActiveChannelsMask = 0;
@@ -176,14 +187,14 @@ void lightning_cleanup(void){
     
 //     {
 //         dma_channel_config c = dma_channel_get_default_config(dChan);
-//         channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, LIGHTNING_RX_SM, false)); //false=read data from SM, true=write data to SM
+//         channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, gLightning_rx_sm, false)); //false=read data from SM, true=write data to SM
 //         channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
 //         channel_config_set_read_increment(&c, false);
 //         channel_config_set_write_increment(&c, true);
 //         dma_channel_configure(  dChan,
 //                                 &c,
 //                                 buf,
-//                                 &((uint8_t*)(&LIGHTNING_PIO->rxf[LIGHTNING_RX_SM]))[3],
+//                                 &((uint8_t*)(&LIGHTNING_PIO->rxf[gLightning_rx_sm]))[3],
 //                                 bufSize,
 //                                 true
 //         );
@@ -199,13 +210,13 @@ void lightning_write_nonblocking(const void *buf, uint8_t bufSize){
     if (!bufSize) return;
     {
         dma_channel_config c = dma_channel_get_default_config(gTxDMAChannel);
-        channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, LIGHTNING_TX_SM, true)); //false=read data from SM, true=write data to SM
+        channel_config_set_dreq(&c, pio_get_dreq(LIGHTNING_PIO, gLightning_tx_sm, true)); //false=read data from SM, true=write data to SM
         channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
         channel_config_set_read_increment(&c, true);
         channel_config_set_write_increment(&c, false);
         dma_channel_configure(  gTxDMAChannel,
                                 &c,
-                                &LIGHTNING_PIO->txf[LIGHTNING_TX_SM],
+                                &LIGHTNING_PIO->txf[gLightning_tx_sm],
                                 buf,
                                 bufSize,
                                 true
