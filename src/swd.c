@@ -27,15 +27,16 @@ static int gSWD_pio_pc = -1;
 
 #pragma mark public
 
-void swd_init(int swd_io, int swd_clk){
+int swd_init(int swd_io, int swd_clk){
+    if (gSWD_sm == -1){
+        gSWD_sm = pio_claim_unused_sm(SWD_PIO, true);
+        if (gSWD_sm == -1) return -1;
+    }
+
     pio_gpio_init(SWD_PIO, swd_clk);
     pio_gpio_init(SWD_PIO, swd_io);
     gpio_set_pulls(swd_clk, false, true);
     gpio_set_pulls(swd_io, true, false);
-
-    if (gSWD_sm == -1){
-      gSWD_sm = pio_claim_unused_sm(SWD_PIO, true);
-    }
 
     if (gSWD_pio_pc == -1){
         pio_sm_set_enabled(SWD_PIO, gSWD_sm, false);
@@ -61,6 +62,7 @@ void swd_init(int swd_io, int swd_clk){
 
     swd_set_freq(1000);
     swd_reset();
+    return 0;
 }
 
 void swd_gpio_configure(int pin_swdio){

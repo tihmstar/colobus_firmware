@@ -40,6 +40,7 @@ set(PICO_TINYUSB_PATH ${PICO_SDK_PATH}/lib/tinyusb)
 file(GLOB_RECURSE SOURCES RELATIVE ${CMAKE_SOURCE_DIR} ${PICO_TINYUSB_PATH}/src)
 
 add_subdirectory(libs/git-commit-tracking)
+add_subdirectory(src/usbliter8/pio_usb)
 
 add_executable(${PROJECT_NAME} 
     src/main.c
@@ -53,6 +54,9 @@ add_executable(${PROJECT_NAME}
     src/usbhub.c
     src/usbmux.c
     src/pio_i2c.c
+    src/usbliter8/usb.c
+    src/usbliter8/bus.c
+    src/usbliter8/exploit.c
     ${SOURCES}
 )
 
@@ -76,6 +80,7 @@ target_link_libraries(${PROJECT_NAME}
     tinyusb_device
     tinyusb_board
     cmake_git_commit_tracking
+    pio_usb
 )
 
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/pio/lightning.pio)

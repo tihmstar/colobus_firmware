@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-void swd_init(int swd_io, int swd_clk);
+int swd_init(int swd_io, int swd_clk);
 void swd_gpio_configure(int pin_swdio);
 void swd_deinit();
 

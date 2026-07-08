@@ -18,6 +18,9 @@
 #include <pico/bootrom.h>
 #include "bsp/board.h"
 
+#include "usbliter8/usb.h"
+#include "usbliter8/exploit.h"
+
 #include <tusb.h>
 
 #include <macros.h>
@@ -88,6 +91,14 @@ static int gDPIDR = 0;
 
 static bool gSWDModeIsSpam = true;
 static bool gCableIsInverted = false;
+
+
+#pragma mark usbliter8
+int gUSBLiter8Connected = 0; //1 queued, 2 connected
+int gUSBLiter8Open = 0; //1 queued, 2 connected
+int gUSBLiter8DoIdentify = 0;
+int gUSBLiter8DoExploit = 0;
+uint64_t gUSBLiter8DFUEnterTime = 0;
 
 void dcsd_init(void){
     if (!gDCSDIsInited){
@@ -310,8 +321,6 @@ int task_spam(){
     int ack = 0;
     bool hasdata = false;
 
-
-
     if (!gDPIDR){
         cassure(swd_reset());
         SWD_DP_clear_error();
@@ -399,6 +408,15 @@ void task_swd(){
     gIsSWDTaskActive = false;
 }
 
+void colobus_perform_usbliter8(){
+  usbmux_configure(kMuxcfg_iphone_to_gpio);
+  usb_task_queue_cmd(USB_CMD_WAIT_FOR_DEVICE);
+  gUSBLiter8Connected = 1;
+  gWantTristarReset = true;
+  gWantTristarDFU = true;
+  colobus_perform_wake();
+}
+
 void myusb_task(){
   tud_task();
   if (gDCSDIsInited){
@@ -462,6 +480,9 @@ void myusb_task(){
       tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\r\n");
       gWantTristarReset = true;
       colobus_perform_wake();
+    } else if (!strcmp(line, "usbliter8")){
+      tud_cdc_n_write_str(ITF_CONTROL, "entering DFU with exploit!\r\n");
+      colobus_perform_usbliter8();
     } else if (!strcmp(line, "dfu")){
       tud_cdc_n_write_str(ITF_CONTROL, "entering DFU!\r\n");
       gWantTristarReset = true;
@@ -481,6 +502,76 @@ void myusb_task(){
   }
   tud_cdc_n_write_flush(ITF_CONTROL);
   tud_task();
+}
+
+void usbliter8_task(){
+    if (usb_task_cmd_has_finished()){
+      if (gUSBLiter8Open == 1){
+        if (!usb_task_get_cmd_res()){
+            tud_cdc_n_write_str(ITF_CONTROL, "EP0 opened!\r\n");
+            gUSBLiter8Open = 2;
+            gUSBLiter8DoIdentify = 1;
+            gUSBLiter8DFUEnterTime = time_us_64();
+            gpio_put(PIN_LED1, 0);
+            gpio_put(PIN_LED2, 1);
+            gpio_put(PIN_LED3, 0);
+        }else{
+            tud_cdc_n_write_str(ITF_CONTROL, "EP0 open failed!\r\n");
+            gUSBLiter8Open = 0;
+        }
+      }else if (gUSBLiter8Connected == 1){
+        if (!usb_task_get_cmd_res()){
+            tud_cdc_n_write_str(ITF_CONTROL, "USB connected!\r\n");
+            gUSBLiter8Connected = 2;
+            usb_task_queue_cmd(USB_CMD_WAIT_FOR_DEVICE);
+            gUSBLiter8Open = 1;
+        }else{
+            tud_cdc_n_write_str(ITF_CONTROL, "USB connection failed!\r\n");
+            gUSBLiter8Connected = 0;
+        }
+      }
+    }
+    if (gUSBLiter8DoIdentify == 1){
+      if (time_us_64() - gUSBLiter8DFUEnterTime > USEC_PER_MSEC*1200){
+        gUSBLiter8DoIdentify = 2;
+      }
+    } else if (gUSBLiter8DoIdentify == 2){
+      gUSBLiter8DoIdentify = 0;
+      uint16_t cpid = 0;
+      bool pwned = false;
+      char serial[128] = {};
+      int err = device_identify(&cpid,&pwned,serial);
+      if (err){
+        tud_cdc_n_write_str(ITF_CONTROL, "[usbliter8] Failed to identify device\r\n");
+        usb_task_queue_cmd(USB_CMD_RESET_OPEN_EP0);
+        gUSBLiter8Open = 1;
+      }else{
+        char buf[0x100] = {};
+        snprintf(buf,sizeof(buf),"[usbliter8] CPID:0x%04x pwn:%d\r\n",cpid,pwned);
+        tud_cdc_n_write_str(ITF_CONTROL, buf);
+        tud_cdc_n_write_str(ITF_CONTROL, "[usbliter8] Got device: ");
+        tud_cdc_n_write_str(ITF_CONTROL, serial);
+        tud_cdc_n_write_str(ITF_CONTROL, "\r\n");
+        gUSBLiter8DoExploit = 1;
+      }
+    }else if (gUSBLiter8DoExploit){
+      gUSBLiter8DoExploit = 0;
+      char buf[0x100] = {};
+      int err = exploit_run();
+      if (!err){
+        snprintf(buf, sizeof(buf),"[usbliter8] Exploit succeeded!\r\n");
+        gpio_put(PIN_LED1, 1);
+        gpio_put(PIN_LED2, 0);
+        gpio_put(PIN_LED3, 0);
+      }else{
+        snprintf(buf, sizeof(buf),"[usbliter8] Exploit failed err=%d\r\n",err);
+        gpio_put(PIN_LED1, 0);
+        gpio_put(PIN_LED2, 0);
+        gpio_put(PIN_LED3, 1);
+      }
+      usbmux_configure(kMuxcfg_iphone_to_hub);
+      tud_cdc_n_write_str(ITF_CONTROL, buf);
+    }
 }
 
 int main(){
@@ -508,6 +599,9 @@ int main(){
     lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
 
     colobus_perform_wake();
+
+    usb_start();
+    usb_bus_init();
 
     while (1){
         {
@@ -584,11 +678,13 @@ int main(){
         }
 
         if (!isKisMode && gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
-            if (!gSWDIsInited){
-                swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
-                gSWDIsInited = true;
-            }
-            swd_reset();
+            /*
+              For now we disable SWD because we need that PIO for usbliter8
+            */
+            // if (!gSWDIsInited){
+            //     gSWDIsInited = !swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
+            // }
+            if (gSWDIsInited) swd_reset();
             gWantSWDInitTime = 0;
             gDPIDR = 0;
         }
@@ -596,6 +692,7 @@ int main(){
         if (gWantSWDInitTime == 0 && gSWDIsInited){
             task_swd();
         }
+        usbliter8_task();
         myusb_task();
     }
 }
