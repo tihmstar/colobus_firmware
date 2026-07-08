@@ -6,6 +6,7 @@
 #include "tusb_config.h"
 #include "puart.h"
 #include "usbhub.h"
+#include "usbmux.h"
 
 #include <pico.h>
 #include <pico/multicore.h>
@@ -39,9 +40,9 @@
 #define PIN_BUTTON2 6
 #define PIN_BUTTON3 7
 
-#define PIN_LED1  40
-#define PIN_LED2  39
-#define PIN_LED3  38
+#define PIN_LED1  28
+#define PIN_LED2  27
+#define PIN_LED3  26
 
 
 #define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 2)
@@ -431,6 +432,28 @@ void task_swd(){
 
 void myusb_task(){
   tud_task();
+  if (gDCSDIsInited){
+      int itf_primary = ITF_UART_PRIMARY;
+      while (uart_is_readable(DCSD_UART) && tud_cdc_n_write_available(itf_primary)) {
+          tud_cdc_n_write_char(itf_primary, uart_getc(DCSD_UART));
+      }
+      
+      if (tud_cdc_n_available(itf_primary)) {
+          uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_primary));
+      }
+      tud_cdc_n_write_flush(itf_primary);
+  }        
+
+  if (gPUARTIsInited){
+      int itf_tgt = ITF_SERIAL0;
+      while (puart_is_readable() && tud_cdc_n_write_available(itf_tgt)) {
+          tud_cdc_n_write_char(itf_tgt, puart_getc());
+      }
+      if (tud_cdc_n_available(itf_tgt)) {
+          uart_putc_raw(DCSD_UART, tud_cdc_n_read_char(itf_tgt));
+      }
+      tud_cdc_n_write_flush(itf_tgt);
+  }
   static char line[0x100] = {};
   static size_t didRead = 0;
   int didBreak = 0;
@@ -495,6 +518,7 @@ int main(){
     board_init(); //THIS IS MANDATORY, OTHERWISE SWD DOESN'T WORK!!!
 
     usbhub_init_default();
+    usbmux_configure(kMuxcfg_iphone_to_hub);
 
     button_init();
     colobus_init();

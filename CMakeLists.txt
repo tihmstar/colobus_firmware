@@ -51,6 +51,7 @@ add_executable(${PROJECT_NAME}
     src/puart.c
     src/usb_descriptors.c
     src/usbhub.c
+    src/usbmux.c
     src/pio_i2c.c
     ${SOURCES}
 )
