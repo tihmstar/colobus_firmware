@@ -26,15 +26,11 @@
 #include <string.h>
 #include <ctype.h>
 
-#define ENABLE_BOOTSEL_BUTTON_CHECKING 
-
 #define SPAM_ATTEMPTS_TIMEOUT 2000
 
 #define USEC_PER_SEC  1000000L
 #define USEC_PER_MSEC    1000L
 
-
-#define IS_COLOBUS_HARDWARE
 
 #define PIN_BUTTON1 5
 #define PIN_BUTTON2 6
@@ -165,53 +161,26 @@ void colobus_init(void){
     }    
 }
 
-
-static bool get_my_bootsel_button(void){
-    bool button_state = false;
-#ifdef ENABLE_BOOTSEL_BUTTON_CHECKING
-    if (!((uint32_t)main >= SRAM_BASE && (uint32_t)main < SRAM_END)){
-        //to use this function you need to compile with 'set(PICO_COPY_TO_RAM 1)'
-        return false;
-    }
-
-	const uint CS_PIN_INDEX = 1;
-
-    static bool isFlashDisabled = false;
-    if (!isFlashDisabled){
-        hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl, GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB, IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-
-    	for (volatile int i = 0; i < 1000; ++i) tight_loop_contents();
-    }
-    button_state = !(sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
-#endif
-    return button_state;
+static inline void init_button_pin(uint32_t pin_button){
+  gpio_init(pin_button);
+  gpio_set_dir(pin_button, GPIO_IN);
+  gpio_pull_up(pin_button);
 }
 
 void button_init(){
-  for (size_t i = 0; i < 3; i++){
-    gpio_init(PIN_BUTTON1+i);
-    gpio_set_dir(PIN_BUTTON1+i, GPIO_IN);
-    gpio_pull_up(PIN_BUTTON1+i);
-  }
+  init_button_pin(PIN_BUTTON1);
+  init_button_pin(PIN_BUTTON2);
+  init_button_pin(PIN_BUTTON3);
 }
 
 bool button_get_edge(int btn){
-    btn -= PIN_BUTTON1;
-    static bool lastState[3] = {true, true, true};
+    static bool lastState[32] = {[0 ... 31] = true};
     bool ret = false;
     if (btn < 0 || btn >= ARRAYOF(lastState)) return false;
-    bool curState = gpio_get(PIN_BUTTON1 + btn);
+    bool curState = gpio_get(btn);
     if (!curState && lastState[btn]) ret = true;
     lastState[btn] = curState;
     return ret;
-}
-
-bool get_button(void){
-    if (get_my_bootsel_button()) return true;
-#ifndef IS_COLOBUS_HARDWARE
-    return !gpio_get(PIN_BUTTON1);
-#endif
-    return false;
 }
 
 typedef enum {
@@ -264,7 +233,7 @@ t_buttonPressType detectButtonPress(void){
     t_buttonPressType ret = kButtonPressTypeNone;
 
     uint64_t curTime = time_us_64();
-    bool curState = get_button();
+    bool curState = !gpio_get(PIN_BUTTON1);
 
     /*
         Perform some manual debouncing
