@@ -1,9 +1,8 @@
 #include "usbhub.h"
 
-#include "pio_i2c.h"
-
 #include <pico/time.h>
 #include <hardware/gpio.h>
+#include <hardware/i2c.h>
 
 #include <stdbool.h>
 #include <string.h>
@@ -22,6 +21,9 @@
 
 #pragma mark private
 static void usbhub_reset(bool defaultcfg){
+  gpio_init(USBHUB_PIN_CFG1);
+  gpio_set_dir(USBHUB_PIN_CFG1, GPIO_OUT);
+  gpio_put(USBHUB_PIN_CFG1, 0);
   gpio_init(USBHUB_PIN_SCL);
   gpio_set_dir(USBHUB_PIN_SCL, GPIO_OUT);
   gpio_put(USBHUB_PIN_SCL, !defaultcfg);
@@ -36,8 +38,8 @@ static void usbhub_reset(bool defaultcfg){
 
 static uint8_t usbhub_readbyte(uint8_t addr){
   uint8_t ret[2] = {};
-  int asd = pio_i2c_write_blocking(USBHUB_SMBUS_DEVICE, &addr, sizeof(addr), true);
-  int dsa = pio_i2c_read_blocking(USBHUB_SMBUS_DEVICE, &ret, sizeof(ret));
+  int asd = i2c_write_blocking(i2c1, USBHUB_SMBUS_DEVICE, &addr, sizeof(addr), true);
+  int dsa = i2c_read_blocking(i2c1, USBHUB_SMBUS_DEVICE, ret, sizeof(ret), false);
   return ret[1];
 }
 
@@ -47,7 +49,7 @@ static void usbhub_writebyte(uint8_t addr, uint8_t data){
     1,
     data
   };
-  pio_i2c_write_blocking(USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
+  i2c_write_blocking(i2c1, USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
 }
 
 static void usbhub_writeword(uint8_t addr, uint16_t data){
@@ -57,7 +59,7 @@ static void usbhub_writeword(uint8_t addr, uint16_t data){
     data,
     data >> 8
   };
-  pio_i2c_write_blocking(USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
+  i2c_write_blocking(i2c1, USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
 }
 
 static void usbhub_write_internal(uint8_t addr, void *data, uint8_t datalen){
@@ -66,7 +68,7 @@ static void usbhub_write_internal(uint8_t addr, void *data, uint8_t datalen){
   d[0] = addr;
   d[1] = datalen;
   memcpy(&d[2], data, datalen);
-  pio_i2c_write_blocking(USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
+  i2c_write_blocking(i2c1, USBHUB_SMBUS_DEVICE, d, sizeof(d), false);
 }
 
 static void usbhub_write(uint8_t addr, void *data, uint8_t datalen){
@@ -148,11 +150,15 @@ static void usbhub_lock_and_attach(){
 #pragma mark public low level
 void usbhub_init(){
   usbhub_reset(false);
-  pio_i2c_init(USBHUB_PIN_SDA, USBHUB_PIN_SCL);
+  i2c_init(i2c1, 100e3);
+  gpio_pull_up(USBHUB_PIN_SDA);
+  gpio_pull_up(USBHUB_PIN_SCL);
+  gpio_set_function(USBHUB_PIN_SDA, GPIO_FUNC_I2C);
+  gpio_set_function(USBHUB_PIN_SCL, GPIO_FUNC_I2C);
 }
 
 void usbhub_deinit(){
-  pio_i2c_deinit();
+  i2c_deinit(i2c1);
 }
 
 #pragma mark public easy-use

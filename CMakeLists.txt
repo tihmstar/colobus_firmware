@@ -1,6 +1,8 @@
 # Set minimum required version of CMake
 cmake_minimum_required(VERSION 3.12)
 
+set(PICO_PLATFORM rp2350)
+
 # Include build functions from Pico SDK
 include(pico_sdk_import.cmake)
 

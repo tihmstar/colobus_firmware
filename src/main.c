@@ -35,22 +35,22 @@
 #define USEC_PER_MSEC    1000L
 
 
-#define PIN_BUTTON1 5
-#define PIN_BUTTON2 6
-#define PIN_BUTTON3 7
+#define PIN_BUTTON1 0
+#define PIN_BUTTON2 4
+#define PIN_BUTTON3 16
 
-#define PIN_LED1  28
-#define PIN_LED2  27
-#define PIN_LED3  26
+#define PIN_LED1  1
+#define PIN_LED2  2
+#define PIN_LED3  9
 
 
-#define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 2)
+#define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 14)
 
-#define PIN_SWDIO_INVERTED(isInverted)      (isInverted ? 3 : 2)
-#define PIN_SWDCLK_INVERTED(isInverted)     (isInverted ? 2 : 3)
+#define PIN_SWDIO_INVERTED(isInverted)      (isInverted ? 3 : 14)
+#define PIN_SWDCLK_INVERTED(isInverted)     (isInverted ? 14 : 3)
 
-#define PIN_PUART_TX_INVERTED(isInverted)   (isInverted ? 3 : 2)
-#define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 2 : 3)
+#define PIN_PUART_TX_INVERTED(isInverted)   (isInverted ? 3 : 14)
+#define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 14 : 3)
 
 
 
@@ -59,8 +59,8 @@
 extern int main(void);
 
 #define DCSD_UART uart0
-#define DCSD_TX_PIN 0
-#define DCSD_RX_PIN 1
+#define DCSD_TX_PIN 12
+#define DCSD_RX_PIN 13
 
 
 #define ITF_SERIAL0 0
@@ -681,9 +681,9 @@ int main(){
             /*
               For now we disable SWD because we need that PIO for usbliter8
             */
-            // if (!gSWDIsInited){
-            //     gSWDIsInited = !swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
-            // }
+            if (!gSWDIsInited){
+                gSWDIsInited = !swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
+            }
             if (gSWDIsInited) swd_reset();
             gWantSWDInitTime = 0;
             gDPIDR = 0;

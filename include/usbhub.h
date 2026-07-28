@@ -1,9 +1,10 @@
 #ifndef USBHUB_H
 #define USBHUB_H
 
-#define USBHUB_PIN_RESET  12
-#define USBHUB_PIN_SCL    16
-#define USBHUB_PIN_SDA    17
+#define USBHUB_PIN_RESET  19
+#define USBHUB_PIN_CFG1   15
+#define USBHUB_PIN_SCL    11
+#define USBHUB_PIN_SDA    10
 
 #pragma mark low level
 void usbhub_init();

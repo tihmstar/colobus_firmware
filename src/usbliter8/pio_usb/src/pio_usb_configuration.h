@@ -22,7 +22,7 @@ typedef struct {
 } pio_usb_configuration_t;
 
 #ifndef PIO_USB_DP_PIN_DEFAULT
-#define PIO_USB_DP_PIN_DEFAULT 22
+#define PIO_USB_DP_PIN_DEFAULT 28
 #endif
 
 #define PIO_USB_TX_DEFAULT 1

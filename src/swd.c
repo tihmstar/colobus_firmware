@@ -10,7 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#define SWD_PIO pio1
+#define SWD_PIO pio2
 
 #define ARRAYOF(arr) (sizeof(arr)/sizeof(*arr))
 
