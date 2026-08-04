@@ -44,13 +44,13 @@
 #define PIN_LED3  9
 
 
-#define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 3 : 14)
+#define PIN_SDQ_INVERTED(isInverted)        (isInverted ? 14 : 3)
 
-#define PIN_SWDIO_INVERTED(isInverted)      (isInverted ? 3 : 14)
-#define PIN_SWDCLK_INVERTED(isInverted)     (isInverted ? 14 : 3)
+#define PIN_SWDIO_INVERTED(isInverted)      (isInverted ? 14 : 3)
+#define PIN_SWDCLK_INVERTED(isInverted)     (isInverted ? 3 : 14)
 
-#define PIN_PUART_TX_INVERTED(isInverted)   (isInverted ? 3 : 14)
-#define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 14 : 3)
+#define PIN_PUART_TX_INVERTED(isInverted)   (isInverted ? 14 : 3)
+#define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 3 : 14)
 
 
 
@@ -678,9 +678,6 @@ int main(){
         }
 
         if (!isKisMode && gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
-            /*
-              For now we disable SWD because we need that PIO for usbliter8
-            */
             if (!gSWDIsInited){
                 gSWDIsInited = !swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
             }

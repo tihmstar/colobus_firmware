@@ -22,8 +22,6 @@ else ()
     set(BUILD_VERSION_TYPE R)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2")
     endif()
-    message("Enabling PICO_COPY_TO_RAM")
-    set(PICO_COPY_TO_RAM 1)
 endif()
 message("BUILD_TIME_PROVIDED_VERSION=${BUILD_TIME_PROVIDED_VERSION} BUILD_VERSION_TYPE=${BUILD_VERSION_TYPE}")
 
