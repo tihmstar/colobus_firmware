@@ -412,8 +412,6 @@ void colobus_perform_usbliter8(){
   usbmux_configure(kMuxcfg_iphone_to_gpio);
   usb_task_queue_cmd(USB_CMD_WAIT_FOR_DEVICE);
   gUSBLiter8Connected = 1;
-  gWantTristarReset = true;
-  gWantTristarDFU = true;
   colobus_perform_wake();
 }
 
