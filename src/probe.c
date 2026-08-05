@@ -64,12 +64,20 @@ error:
 static uint8_t gCmands[0x100];
 static uint8_t gSWDAckDelay = 0;
 
-struct __attribute__((__packed__)) astris_cmd {
+struct __attribute__((__packed__)) newTypeCmd {
     uint16_t cmd;
     uint16_t len;
     uint16_t pad1;
     uint16_t id;
     uint8_t data[0];
+};
+
+struct __attribute__((__packed__)) newTypeCmdAPRW {
+    struct newTypeCmd hdr;
+    uint32_t reqData;
+    uint32_t pad2;
+    uint64_t addr;
+    uint32_t readLen;
 };
 
 // struct __attribute__((__packed__)) ServerInfo {
@@ -83,12 +91,12 @@ struct __attribute__((__packed__)) astris_cmd {
 // }
 
 static bool reset_line(){
+    uint32_t dummy_flush = 0;
     for (size_t i = 0; i < 10; i++){
         if (!swd_reset()) continue;
         sleep_us(10);
         if (SWD_DP_clear_error() != SWD_RSP_OK) continue;
-        if (SWD_DP_write_SELECT(0) != SWD_RSP_OK) continue;
-        if (SWD_DP_write_CTRL(0x50000020) != SWD_RSP_OK) continue;
+        if (SWD_DP_read_RDBUFF(&dummy_flush) != SWD_RSP_OK) continue;
         return true;
     }
     return false;
@@ -97,7 +105,7 @@ static bool reset_line(){
 static bool processNewSWDCmd(void *buf, size_t bufSize){
     int err = 0;
     uint8_t *ptr = (uint8_t*)buf;
-    struct astris_cmd *cmd = (struct astris_cmd*)buf;
+    struct newTypeCmd *cmd = (struct newTypeCmd*)buf;
     if (bufSize < sizeof(*cmd)) return false;
 #define doReply(v) do {cmd->cmd = 0;tud_vendor_write(cmd, sizeof(*cmd));uint16_t rsp[2] = {0,v};tud_vendor_write(rsp, sizeof(rsp));tud_vendor_write(&cmd->data[4], cmd->len-4);;tud_vendor_flush(); return true;} while (0)
 #define replyWord(w) do {cmd->cmd = 0;uint32_t unk = w;cmd->len = sizeof(unk);tud_vendor_write(cmd, sizeof(*cmd));tud_vendor_write(&unk, sizeof(unk));tud_vendor_flush();return true;} while (0)
@@ -170,17 +178,24 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
     case 0x2001:
     {
         cmd->cmd = 0;
+        uint32_t req = (((uint32_t)cmd->data[0x03]) << 24) | (cmd->data[0x08] & 0xF0);
         if (cmd->len == 0x14){
             cmd->len = 0x18;
             uint32_t rsp = 0;
-            uint32_t req = (((uint32_t)cmd->data[0x03]) << 24) | cmd->data[0x08] & 0xF0;
             uint8_t fail = 0;
-            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (swd_read(BITS_AP_READ((cmd->data[0x08] & 0xF)<<1),&rsp) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_read_RDBUFF(&rsp) != SWD_RSP_OK);
-            if (fail) reset_line();
+            for (int z=0; z<2; z++){
+                fail = 0;
+                fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
+                sleep_us(gSWDAckDelay);
+                fail |= (swd_read(BITS_AP_READ((cmd->data[0x08] & 0xF)<<1),&rsp) != SWD_RSP_OK);
+                sleep_us(gSWDAckDelay);
+                fail |= (SWD_DP_read_RDBUFF(&rsp) != SWD_RSP_OK);
+                if (fail){
+                    reset_line();
+                    continue;
+                }
+                break;
+            }
             cmd->data[2] = fail ? 0xFE : 0x00;
             tud_vendor_write(cmd, sizeof(*cmd));
             tud_vendor_write(cmd->data, cmd->len-4);
@@ -188,11 +203,10 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             tud_vendor_flush();
             return true;
         }else if (cmd->len == 0x18){
-            uint32_t req = (((uint32_t)cmd->data[0x03]) << 24) | cmd->data[0x08] & 0xF0;
             uint8_t fail = 0;
-            fail |= SWD_DP_write_SELECT(req);
+            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= swd_write(BITS_AP_WRITE((cmd->data[0x08] & 0xF)<<1),*(uint32_t*)&cmd->data[0x14]);
+            fail |= (swd_write(BITS_AP_WRITE((cmd->data[0x08] & 0xF)<<1),*(uint32_t*)&cmd->data[0x14]) != SWD_RSP_OK);
             cmd->data[2] = fail ? 0xFE : 0x00;
             if (fail) reset_line();
             cmd->len = 0x14;
@@ -212,20 +226,17 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
         addr <<= 32;
         addr |= *(uint32_t*)&cmd->data[0x08];
         uint32_t cnt = *(uint32_t*)&cmd->data[0x10];
+        uint32_t req = (((uint32_t)cmd->data[0x03]) << 24);
+        uint32_t *w = (uint32_t*)&cmd->data[0x14];
         if (cmd->len == 0x14){
-            uint32_t req = (((uint32_t)cmd->data[0x03]) << 24);
             uint32_t rsp[0x10] = {};
             uint8_t didRead = 0;
             uint8_t fail = 0;
             fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_write_SELECT(req | (1<<4)) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
             fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
+            fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
             fail |= (SWD_AP_read_DRW(&rsp[0]) != SWD_RSP_OK);
             for (uint32_t curw = 0; curw < cnt && curw < ARRAYOF(rsp); curw++){
@@ -246,19 +257,14 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             tud_vendor_flush();
             return true;
         }else if (cmd->len == 0x18){
-            uint32_t req = (((uint32_t)cmd->data[0x03]) << 24);
             uint8_t fail = 0;
+            uint32_t rsp = 0;
             fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_write_SELECT(req | (1<<4)) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
             fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
+            fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            uint32_t *w = (uint32_t*)&cmd->data[0x14];
             fail |= (SWD_AP_write_DRW(*w) != SWD_RSP_OK);
             if (fail) reset_line();
             cmd->data[2] = fail ? 0xFE : 0x00;
@@ -268,24 +274,18 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             tud_vendor_flush();
             return true;
         }else if (cmd->len == 0x1C){
-            uint32_t req = (((uint32_t)cmd->data[0x03]) << 24);
             uint8_t fail = 0;
-            uint32_t *w = (uint32_t*)&cmd->data[0x14];
             fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
+            sleep_us(gSWDAckDelay);
+            fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
             fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
             fail |= (SWD_DP_write_SELECT(req | (1<<4)) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
+            fail |= (swd_write(BITS_AP_WRITE(0b00 << 3),w[0]) != SWD_RSP_OK);
             sleep_us(gSWDAckDelay);
-            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_DRW(w[0]) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_TAR(addr+4) != SWD_RSP_OK);
-            sleep_us(gSWDAckDelay);
-            fail |= (SWD_AP_write_DRW(w[1]) != SWD_RSP_OK);
+            fail |= (swd_write(BITS_AP_WRITE(0b01 << 3),w[1]) != SWD_RSP_OK);
             if (fail) reset_line();
             cmd->data[2] = fail ? 0xFE : 0x00;
             cmd->len = 0x14;

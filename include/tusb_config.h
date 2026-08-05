@@ -82,8 +82,8 @@
 #define CFG_TUD_CDC_EP_BUFSIZE   (TUD_OPT_HIGH_SPEED ? 512 : 1024)
 
 // Vendor transfer bufsize
-#define CFG_TUD_VENDOR_RX_BUFSIZE 0x200
-#define CFG_TUD_VENDOR_TX_BUFSIZE 0x200
+#define CFG_TUD_VENDOR_RX_BUFSIZE 0x1000
+#define CFG_TUD_VENDOR_TX_BUFSIZE 0x1000
 
 #ifdef __cplusplus
  }
