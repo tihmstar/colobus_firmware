@@ -61,7 +61,7 @@ int swd_init(int swd_io, int swd_clk){
         pio_sm_set_enabled(SWD_PIO, gSWD_sm, true);
     }
 
-    swd_set_freq(1000);
+    swd_set_freq_hz(1e6);
     swd_reset();
     return 0;
 }
@@ -82,20 +82,20 @@ void swd_deinit(){
     }
 }
 
-void swd_set_freq(uint32_t freq_khz){
-    float div = ((float)clock_get_hz(clk_sys)/1e3) / (freq_khz<<1);
+void swd_set_freq_hz(uint32_t freq_hz){
+    float div = ((float)clock_get_hz(clk_sys)) / (freq_hz<<1);
     if (div < 1) div = 1;
     pio_sm_set_clkdiv(SWD_PIO, gSWD_sm, div);
 }
 
-uint32_t swd_get_freq(){
+uint32_t swd_get_freq_hz(){
     uint32_t piocldif = SWD_PIO->sm[gSWD_sm].clkdiv;
     uint8_t div_frac8 = piocldif >> PIO_SM0_CLKDIV_FRAC_LSB;
     uint32_t div_int = piocldif >> PIO_SM0_CLKDIV_INT_LSB;
     const int frac_bit_count = REG_FIELD_WIDTH(PIO_SM0_CLKDIV_FRAC);
     float div = (float)div_int + ((float)div_frac8/(1u << frac_bit_count));
-    uint32_t freq_khz = (((float)clock_get_hz(clk_sys)/1e3) / div);
-    return freq_khz>>1;
+    uint32_t freq_hz = (((float)clock_get_hz(clk_sys)) / div);
+    return freq_hz>>1;
 }
 
 bool swd_reset(){

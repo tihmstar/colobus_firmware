@@ -49,7 +49,7 @@ static uint8_t processCmd(struct colobus_cmd *cmd){
         break;
 
     case kCOLOBUS_CMD_FREQ:
-        swd_set_freq(cmd->data);
+        swd_set_freq_hz(cmd->data*1000);
         err = 1;
         break;
     
@@ -68,7 +68,8 @@ struct __attribute__((__packed__)) newTypeCmd {
     uint16_t cmd;
     uint16_t len;
     uint16_t pad1;
-    uint16_t id;
+    uint8_t id;
+    uint8_t more;
     uint8_t data[0];
 };
 
@@ -120,8 +121,8 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
     case 0x8002:
         replyByte(reset_line());
     case 0x8003:
-        swd_set_freq(0x4371a0/1000);
-        replyWord(0x4371a0);
+        if (cmd->more == 0) swd_set_freq_hz((*(uint32_t*)cmd->data));
+        replyWord(swd_get_freq_hz());
     case 0x800B:
         replyWord(0);
     case 0x8007:

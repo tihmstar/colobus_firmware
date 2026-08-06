@@ -8,8 +8,8 @@ int swd_init(int swd_io, int swd_clk);
 void swd_gpio_configure(int pin_swdio);
 void swd_deinit();
 
-void swd_set_freq(uint32_t freq_khz);
-uint32_t swd_get_freq();
+void swd_set_freq_hz(uint32_t freq_hz);
+uint32_t swd_get_freq_hz();
 
 bool swd_reset();
 int swd_read(uint8_t req, uint32_t *val);
