@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <pico/stdlib.h>
 
 #define SWD_PIO pio2
 
@@ -144,6 +145,7 @@ error:
 }
 
 int swd_read(uint8_t req, uint32_t *val){
+    sleep_us(15);
     uint8_t reqbuf[] = {
         (gSWD_pio_pc + swd_offset_write),
         32 -1, //number of bits to write 
@@ -212,6 +214,7 @@ error:
 }
 
 int swd_write(uint8_t req, uint32_t val){
+    sleep_us(15);
     uint32_t parity = __builtin_parity(val);
     uint8_t reqbuf[] = {
         (gSWD_pio_pc + swd_offset_write),
