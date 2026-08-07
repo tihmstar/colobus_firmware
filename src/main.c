@@ -490,6 +490,12 @@ void myusb_task(){
       watchdog_reboot(0,0,0);
     } else if (!strcmp(line, "bl")){
       reset_usb_boot(0,0);
+    } else if (!strcmp(line, "swdnew")){
+        probe_set_protocol(true);
+        tud_cdc_n_write_str(ITF_CONTROL, "Setting SWD protocol to: new\r\n");
+    } else if (!strcmp(line, "swdold")){
+        probe_set_protocol(false);
+        tud_cdc_n_write_str(ITF_CONTROL, "Setting SWD protocol to: old\r\n");
     } else {
       tud_cdc_n_write_str(ITF_CONTROL, "got unrecognised command: '");
       tud_cdc_n_write_str(ITF_CONTROL, line);

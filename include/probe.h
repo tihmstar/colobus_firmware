@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 
-void probe_task(bool dontRunSWDCommands);
+void probe_set_protocol(bool useNew);
+int probe_task(bool dontRunSWDCommands);
 
 #endif // PROBE_H

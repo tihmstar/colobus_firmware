@@ -6,13 +6,6 @@
 #include <macros.h>
 #define ARRAYOF(a) (sizeof(a)/sizeof(*a))
 
-/*
-    New SWD protocol is supposed to offload more work to the cable,
-    however it's still buggy, so use the old one for now
-*/
-// #define NEW_SWD_PROTOCOL
-
-#ifndef NEW_SWD_PROTOCOL
 #pragma mark defines
 enum COLOBUS_CMDS {
     kCOLOBUS_CMD_INVALID = 0,
@@ -31,7 +24,8 @@ struct __attribute__((__packed__)) colobus_cmd {
 };
 
 #pragma mark globals
-static struct colobus_cmd gCmands[0x100];
+static bool gUseNewProtocol = true;
+static uint8_t gSWDAckDelay = 0;
 
 static uint8_t processCmd(struct colobus_cmd *cmd){
     int err = 0;
@@ -56,13 +50,8 @@ static uint8_t processCmd(struct colobus_cmd *cmd){
     default:
         return __LINE__;
     }
-error:
     return (uint8_t)err;
 }
-
-#else
-static uint8_t gCmands[0x100];
-static uint8_t gSWDAckDelay = 0;
 
 struct __attribute__((__packed__)) newTypeCmd {
     uint16_t cmd;
@@ -71,14 +60,6 @@ struct __attribute__((__packed__)) newTypeCmd {
     uint8_t id;
     uint8_t more;
     uint8_t data[0];
-};
-
-struct __attribute__((__packed__)) newTypeCmdAPRW {
-    struct newTypeCmd hdr;
-    uint32_t reqData;
-    uint32_t pad2;
-    uint64_t addr;
-    uint32_t readLen;
 };
 
 // struct __attribute__((__packed__)) ServerInfo {
@@ -105,12 +86,11 @@ static bool reset_line_with_err(uint32_t *errcode){
 }
 
 static bool reset_line(){
-    reset_line_with_err(NULL);
+    return reset_line_with_err(NULL);
 }
 
 static bool processNewSWDCmd(void *buf, size_t bufSize){
     int err = 0;
-    uint8_t *ptr = (uint8_t*)buf;
     struct newTypeCmd *cmd = (struct newTypeCmd*)buf;
     if (bufSize < sizeof(*cmd)) return false;
 #define doReply(v) do {cmd->cmd = 0;tud_vendor_write(cmd, sizeof(*cmd));uint16_t rsp[2] = {0,v};tud_vendor_write(rsp, sizeof(rsp));tud_vendor_write(&cmd->data[4], cmd->len-4);;tud_vendor_flush(); return true;} while (0)
@@ -247,15 +227,12 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
             fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
             fail |= (SWD_AP_read_DRW(&rsp[0]) != SWD_RSP_OK);
-            for (uint32_t curw = 0; curw < cnt && curw < ARRAYOF(rsp); curw++){
-                if (curw+1==cnt){
-                    fail |= (SWD_DP_read_RDBUFF(&rsp[didRead]) != SWD_RSP_OK);
-                }else{
-                    fail |= (SWD_AP_read_DRW(&rsp[didRead]) != SWD_RSP_OK);
-                }
+            for (uint32_t curw = 1; curw < cnt && curw < ARRAYOF(rsp); curw++){
+                fail |= (SWD_AP_read_DRW(&rsp[didRead]) != SWD_RSP_OK);
                 if (fail) break;
                 didRead++;
             }
+            fail |= (SWD_DP_read_RDBUFF(&rsp[didRead++]) != SWD_RSP_OK);
             cmd->data[2] = fail ? 0xFE : 0x00;
             if (fail){
                 reset_line_with_err((uint32_t*)(&cmd->data[0x04]));
@@ -269,31 +246,15 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             tud_vendor_write(rsp, 4*didRead);
             tud_vendor_flush();
             return true;
-        }else if (cmd->len == 0x18){
+        }else if (cmd->len >= 0x18){
             uint8_t fail = 0;
             fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
             fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
             fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
-            fail |= (SWD_AP_write_DRW(*w) != SWD_RSP_OK);
-            cmd->data[2] = fail ? 0xFE : 0x00;
-            if (fail){
-                reset_line_with_err((uint32_t*)(&cmd->data[0x04]));
-            }else{
-                fail |= (SWD_DP_read_CTRL((uint32_t*)(&cmd->data[0x04])) != SWD_RSP_OK);
-                if (fail) reset_line_with_err((uint32_t*)(&cmd->data[0x04]));
+            for (uint32_t curw = 0; curw < cnt && curw*4 < cmd->len-0x14; curw++){
+                fail |= (SWD_AP_write_DRW(w[curw]) != SWD_RSP_OK);
+                if (fail) break;
             }
-            cmd->len = 0x14;
-            tud_vendor_write(cmd, sizeof(*cmd));
-            tud_vendor_write(cmd->data, cmd->len);
-            tud_vendor_flush();
-            return true;
-        }else if (cmd->len == 0x1C){
-            uint8_t fail = 0;
-            fail |= (SWD_DP_write_SELECT(req) != SWD_RSP_OK);
-            fail |= (SWD_AP_write_TAR_HIGH(addr>>32) != SWD_RSP_OK);
-            fail |= (SWD_AP_write_TAR(addr) != SWD_RSP_OK);
-            fail |= (SWD_AP_write_DRW(w[0]) != SWD_RSP_OK);
-            fail |= (SWD_AP_write_DRW(w[1]) != SWD_RSP_OK);
             cmd->data[2] = fail ? 0xFE : 0x00;
             if (fail){
                 reset_line_with_err((uint32_t*)(&cmd->data[0x04]));
@@ -346,13 +307,16 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
         break;
     }
 error:
+    (void)err;
     return false;
 }
 
-#endif
-
 #pragma mark public
-void probe_task(bool dontRunSWDCommands){
+void probe_set_protocol(bool useNew){
+    gUseNewProtocol = useNew;
+}
+
+int probe_task(bool dontRunSWDCommands){
     int err = 0;
     uint32_t cmdsReadSize = 0;
     uint32_t cmdsCnt = 0;
@@ -361,38 +325,40 @@ void probe_task(bool dontRunSWDCommands){
     cassure(hasData = tud_vendor_available());
 
 
-#ifdef NEW_SWD_PROTOCOL
-    while ((hasData = tud_vendor_available()) >= 8){
-        cassure(cmdsReadSize = tud_vendor_read(gCmands, 8));
-        if (cmdsReadSize == 8){
-            uint8_t needsRead = gCmands[2];
-            if (needsRead && tud_vendor_read(&gCmands[8], needsRead) != needsRead){
-                tud_vendor_read(gCmands, sizeof(gCmands));
-                return;
+    if (gUseNewProtocol){
+        static uint8_t swdCmdsNew[0x100];
+        while ((hasData = tud_vendor_available()) >= 8){
+            cassure(cmdsReadSize = tud_vendor_read(swdCmdsNew, 8));
+            if (cmdsReadSize == 8){
+                uint8_t needsRead = swdCmdsNew[2];
+                if (needsRead && tud_vendor_read(&swdCmdsNew[8], needsRead) != needsRead){
+                    tud_vendor_read(swdCmdsNew, sizeof(swdCmdsNew));
+                    return err;
+                }
+                cmdsReadSize+=needsRead;
             }
-            cmdsReadSize+=needsRead;
-        }
+            cassure(dontRunSWDCommands == false);
+            processNewSWDCmd(swdCmdsNew, cmdsReadSize);
+            tud_task();    
+        }        
+    }else{
+        static struct colobus_cmd swdCmdsColobus[0x100];
+        cassure(cmdsReadSize = tud_vendor_read(swdCmdsColobus, sizeof(swdCmdsColobus)));
         cassure(dontRunSWDCommands == false);
-        processNewSWDCmd(gCmands, cmdsReadSize);
-        tud_task();    
-    }
-#else    
-    cassure(cmdsReadSize = tud_vendor_read(gCmands, sizeof(gCmands)));
-    cassure(dontRunSWDCommands == false);
-    cmdsCnt = cmdsReadSize/sizeof(*gCmands);
-    for (size_t i = 0; i < cmdsCnt; i++){
-        gCmands[i].res = processCmd(&gCmands[i]);
-    }
-    {
-        uint32_t needSendSize = cmdsCnt*sizeof(*gCmands);
-        uint32_t didSend = 0;
-        for (size_t i = 0; i < 10 && didSend < needSendSize; i++){
-            uint32_t curDidSend = tud_vendor_write(((uint8_t*)gCmands)+didSend, needSendSize-didSend);
-            didSend += curDidSend;
-            tud_vendor_flush();
+        cmdsCnt = cmdsReadSize/sizeof(*swdCmdsColobus);
+        for (size_t i = 0; i < cmdsCnt; i++){
+            swdCmdsColobus[i].res = processCmd(&swdCmdsColobus[i]);
+        }
+        {
+            uint32_t needSendSize = cmdsCnt*sizeof(*swdCmdsColobus);
+            uint32_t didSend = 0;
+            for (size_t i = 0; i < 10 && didSend < needSendSize; i++){
+                uint32_t curDidSend = tud_vendor_write(((uint8_t*)swdCmdsColobus)+didSend, needSendSize-didSend);
+                didSend += curDidSend;
+                tud_vendor_flush();
+            }
         }
     }
-#endif
 error:
-    return;
+    return err;
 }
