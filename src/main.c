@@ -89,7 +89,7 @@ static bool gSWDWantDeinit = false;
 
 static int gDPIDR = 0;
 
-static bool gSWDModeIsSpam = false;
+static bool gSWDModeIsSpam = true;
 static bool gCableIsInverted = false;
 
 
