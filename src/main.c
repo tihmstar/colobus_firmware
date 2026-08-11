@@ -89,7 +89,7 @@ static bool gSWDWantDeinit = false;
 
 static int gDPIDR = 0;
 
-static bool gSWDModeIsSpam = true;
+static bool gSWDModeIsSpam = false;
 static bool gCableIsInverted = false;
 
 
@@ -490,6 +490,15 @@ void myusb_task(){
       watchdog_reboot(0,0,0);
     } else if (!strcmp(line, "bl")){
       reset_usb_boot(0,0);
+    } else if (!strcmp(line, "muxdc")){
+        tud_cdc_n_write_str(ITF_CONTROL, "muxing to: disconnected\r\n");
+        usbmux_configure(kMuxcfg_iphone_disconnected);
+    } else if (!strcmp(line, "muxhub")){
+        tud_cdc_n_write_str(ITF_CONTROL, "muxing to: hub\r\n");
+        usbmux_configure(kMuxcfg_iphone_to_hub);
+    } else if (!strcmp(line, "muxgpio")){
+        tud_cdc_n_write_str(ITF_CONTROL, "muxing to: gpio\r\n");
+        usbmux_configure(kMuxcfg_iphone_to_gpio);
     } else if (!strcmp(line, "swdnew")){
         probe_set_protocol(true);
         tud_cdc_n_write_str(ITF_CONTROL, "Setting SWD protocol to: new\r\n");
