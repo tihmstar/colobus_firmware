@@ -6,4 +6,6 @@
 void probe_set_protocol(bool useNew);
 int probe_task(bool dontRunSWDCommands);
 
+bool probe_reset_line();
+
 #endif // PROBE_H

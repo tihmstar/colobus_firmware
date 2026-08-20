@@ -411,6 +411,7 @@ void task_swd(){
             }else{
                 if (((gSpamFails++) & 0xF) >= 10){
                     gWantSWDInitTime = time_us_64() + 10*USEC_PER_MSEC;
+                    gSWDWantDeinit = true;
                     /*
                         One tristar poll cycle is ~7.6ms.
                     */

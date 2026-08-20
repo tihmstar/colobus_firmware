@@ -84,7 +84,7 @@ static bool reset_line_with_err(uint32_t *errcode){
     return false;
 }
 
-static bool reset_line(){
+bool probe_reset_line(){
     return reset_line_with_err(NULL);
 }
 
@@ -98,7 +98,7 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
 
     switch (cmd->cmd){
     case 0x8002:
-        replyByte(reset_line());
+        replyByte(probe_reset_line());
     case 0x8003:
         if (cmd->more == 0) swd_set_freq_hz((*(uint32_t*)cmd->data));
         replyWord(swd_get_freq_hz());
@@ -141,7 +141,7 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
             uint32_t rsp = 0;
             uint8_t fail = 0;
             fail |= (swd_read(BITS_DP_READ(cmd->data[0x08]<<1), &rsp) != SWD_RSP_OK);
-            if (fail) reset_line();
+            if (fail) probe_reset_line();
             cmd->data[2] = fail ? 0xFE : 0x00;
             tud_vendor_write(cmd, sizeof(*cmd));
             tud_vendor_write(cmd->data, cmd->len-4);
@@ -151,7 +151,7 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
         }else if (cmd->len == 0x18){
             uint8_t fail = 0;
             fail |= (swd_write(BITS_DP_WRITE(cmd->data[0x08]<<1), *(uint32_t*)&cmd->data[0x14]) != SWD_RSP_OK);
-            if (fail) reset_line();
+            if (fail) probe_reset_line();
             cmd->data[2] = fail ? 0xFE : 0x00;
             tud_vendor_write(cmd, sizeof(*cmd));
             tud_vendor_write(cmd->data, cmd->len);
@@ -276,7 +276,7 @@ static bool processNewSWDCmd(void *buf, size_t bufSize){
        {
         cmd->cmd = 0;
         uint32_t rsp[4]={};
-        reset_line();
+        probe_reset_line();
         rsp[1] = swd_read(BITS_DP_READ(BITS_DP_IDCODE), &rsp[0]);
         cmd->len = sizeof(rsp);
         tud_vendor_write(cmd, sizeof(*cmd));
