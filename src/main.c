@@ -121,7 +121,7 @@ void lightning_callback(const void *buf, size_t bufSize){
 
     if (bufSize == 4 && req8[0] == TRISTAR_REQUEST_GET_CABLE_TYPE){
         lightning_gpio_configure(PIN_SDQ_INVERTED(gCableIsInverted));
-        gSWDWantDeinit = false;
+        gSWDIsInited = false;
 
         if (gWantTristarReset){
             lightning_write_blocking(colobus_cable_type_responses[kCOLOBUS_MODE_RESET], sizeof(colobus_cable_type_responses[kCOLOBUS_MODE_RESET]));
@@ -148,7 +148,7 @@ void lightning_callback(const void *buf, size_t bufSize){
 
             if (gActiveMode == kCOLOBUS_MODE_USB_JTAG_UART ||
                 gActiveMode == kCOLOBUS_MODE_USB_JTAG_SPAM){
-                gWantSWDInitTime = time_us_64() + USEC_PER_MSEC*1;
+                gWantSWDInitTime = time_us_64() + USEC_PER_MSEC*10;
                 gSpamFails = 0;
             }
         }
@@ -290,12 +290,16 @@ void colobus_wake_runloop(){
             tight_loop_contents();
         }
         gColobusWantsWake = false;
-        gSWDWantDeinit = false;
-        gpio_init(PIN_SDQ_INVERTED(gCableIsInverted));
-        gpio_set_dir(PIN_SDQ_INVERTED(gCableIsInverted), GPIO_OUT);
-        gpio_put(PIN_SDQ_INVERTED(gCableIsInverted), 0);
+        gSWDIsInited = false;
+        gpio_init(PIN_SDQ_INVERTED(false));
+        gpio_init(PIN_SDQ_INVERTED(true));
+        gpio_set_dir(PIN_SDQ_INVERTED(false), GPIO_OUT);
+        gpio_set_dir(PIN_SDQ_INVERTED(true), GPIO_OUT);
+        gpio_put(PIN_SDQ_INVERTED(false), 0);
+        gpio_put(PIN_SDQ_INVERTED(true), 0);
         sleep_ms(50);
-        gpio_set_dir(PIN_SDQ_INVERTED(gCableIsInverted), GPIO_IN);
+        gpio_set_dir(PIN_SDQ_INVERTED(false), GPIO_IN);
+        gpio_set_dir(PIN_SDQ_INVERTED(true), GPIO_IN);
     }
 }
 
@@ -326,11 +330,12 @@ int task_spam(){
     int err = 0;
 
     uint8_t dstitf = ITF_SERIAL1;
-
+    static uint32_t uart_ctrl_reg = 0;
     int ack = 0;
     bool hasdata = false;
 
     if (!gDPIDR){
+        uart_ctrl_reg = 0;
         cassure(swd_reset());
         SWD_DP_clear_error();
         {
@@ -345,8 +350,7 @@ int task_spam(){
         }
     }
     
-    {
-        uint32_t uart_ctrl_reg = 0;
+    if (!uart_ctrl_reg){
         if (gDPIDR == 0x5ba02477){
             //s7002
             uart_ctrl_reg = 0xc6e00004;
@@ -377,23 +381,39 @@ int task_spam(){
                 gDPIDR = 0;
             }
         }
+    }
 
-        if (uart_ctrl_reg){
-            {
-                int cnt = 1;
+    if (uart_ctrl_reg){
+        static uint64_t sSpamContinueTime = 0;
+        uint64_t curTime = time_us_64();
 
-                while (cnt > 0 && tud_cdc_n_write_available(dstitf) > 1){
-                    uint32_t data = 0;
-                    
-                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data)) != SWD_RSP_OK) break;
-                    cnt = data & 0x7f;
-                    if (!cnt--) break;
-                    hasdata = true;
-                    tud_cdc_n_write_char(dstitf, data >> 8);
+        if (sSpamContinueTime < curTime){
+            uint32_t data = 0;
+            int cnt = 0;
+            if (tud_cdc_n_write_available(dstitf) > 1){
+                if ((ack = SWD_readmem(uart_ctrl_reg + -4, &data)) == SWD_RSP_OK) {
+                    if (data) cnt = 1;
                 }
+            }
+            while (cnt > 0 && tud_cdc_n_write_available(dstitf) > 1){                
+                if ((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data)) != SWD_RSP_OK) break;
+                cnt = data & 0x7f;
+                if (!cnt--) break;
+                hasdata = true;
+                tud_cdc_n_write_char(dstitf, data >> 8);
+            }
+            if (ack == SWD_RSP_FAULT){
+                /*
+                    SPAM UART exists, but isn't ready. Are we in Bootrom maybe?
+                    Spamming too hard makes the device stop being able to process other tasks, 
+                    so slow down until UART is actually enabled
+                */
+                sSpamContinueTime = curTime+50*USEC_PER_MSEC;
+                probe_reset_line();
             }
         }
     }
+    
 error:
     if (ack == SWD_RSP_LINE_ERROR) gDPIDR = 0;
     if (hasdata) tud_cdc_n_write_flush(dstitf);
@@ -402,7 +422,6 @@ error:
 
 void task_swd(){
     gIsSWDTaskActive = true;
-
     probe_task(gSWDModeIsSpam);
     if (gSWDModeIsSpam){
         if (gSpamFails < SPAM_ATTEMPTS_TIMEOUT){
@@ -411,7 +430,6 @@ void task_swd(){
             }else{
                 if (((gSpamFails++) & 0xF) >= 10){
                     gWantSWDInitTime = time_us_64() + 10*USEC_PER_MSEC;
-                    gSWDWantDeinit = true;
                     /*
                         One tristar poll cycle is ~7.6ms.
                     */
@@ -595,8 +613,11 @@ void usbliter8_task(){
         gpio_put(PIN_LED2, 0);
         gpio_put(PIN_LED3, 1);
       }
-      usbmux_configure(kMuxcfg_iphone_to_hub);
       tud_cdc_n_write_str(ITF_CONTROL, buf);
+      tud_cdc_n_write_flush(ITF_CONTROL);
+      tud_task();
+      sleep_ms(100);
+      watchdog_reboot(0,0,0);
     }
 }
 
@@ -710,9 +731,12 @@ int main(){
 
         if (!isKisMode && gWantSWDInitTime && (gWantSWDInitTime < time_us_64())){
             if (!gSWDIsInited){
+                tud_cdc_n_write_str(ITF_CONTROL, "SWD init\r\n");
                 gSWDIsInited = !swd_init(PIN_SWDIO_INVERTED(gCableIsInverted), PIN_SWDCLK_INVERTED(gCableIsInverted));
+                if (gSWDIsInited){
+                    swd_reset();
+                } 
             }
-            if (gSWDIsInited) swd_reset();
             gWantSWDInitTime = 0;
             gDPIDR = 0;
         }

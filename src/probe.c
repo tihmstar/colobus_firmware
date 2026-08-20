@@ -23,7 +23,7 @@ struct __attribute__((__packed__)) colobus_cmd {
 };
 
 #pragma mark globals
-static bool gUseNewProtocol = true;
+static bool gUseNewProtocol = false;
 static uint8_t gSWDAckDelay = 0;
 
 static uint8_t processCmd(struct colobus_cmd *cmd){
