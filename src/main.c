@@ -385,7 +385,7 @@ int task_spam(){
                 while (cnt > 0 && tud_cdc_n_write_available(dstitf) > 1){
                     uint32_t data = 0;
                     
-                    cassure((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data)) == SWD_RSP_OK);
+                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data)) != SWD_RSP_OK) break;
                     cnt = data & 0x7f;
                     if (!cnt--) break;
                     hasdata = true;
