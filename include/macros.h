@@ -36,6 +36,8 @@
 
 #define VERSION_STRING PACKAGE_NAME " version: " VERSION_MAJOR "." VERSION_COMMIT_COUNT "-" VERSION_COMMIT_SHA "-" BUILD_TYPE
 
+#define ARRAYOF(a) (sizeof(a)/sizeof(*a))
+
 
 // ---- functions ----
 

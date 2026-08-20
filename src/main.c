@@ -7,6 +7,7 @@
 #include "puart.h"
 #include "usbhub.h"
 #include "usbmux.h"
+#include "tcmini.h"
 
 #include <pico.h>
 #include <pico/multicore.h>
@@ -53,9 +54,6 @@
 #define PIN_PUART_RX_INVERTED(isInverted)   (isInverted ? 3 : 14)
 
 
-
-#define ARRAYOF(a) (sizeof(a)/sizeof(*a))
-
 extern int main(void);
 
 #define DCSD_UART uart0
@@ -91,6 +89,7 @@ static int gDPIDR = 0;
 
 static bool gSWDModeIsSpam = true;
 static bool gCableIsInverted = false;
+static bool gIsTCMiniMode = false;
 
 
 #pragma mark usbliter8
@@ -189,18 +188,23 @@ bool button_get_edge(int btn){
     bool ret = false;
     if (btn < 0 || btn >= ARRAYOF(lastState)) return false;
     bool curState = gpio_get(btn);
-    if (!curState && lastState[btn]) ret = true;
+    if (!curState && curState == lastState[btn]) ret = true;
     lastState[btn] = curState;
     return ret;
 }
 
 typedef enum {
     kButtonPressTypeNone = 0,
-    kButtonPressTypeShort,  // 0.1 - 1.5 sec
-    kButtonPressTypeMid,    // 1.5 - 3 sec
-    kButtonPressTypeLong,   // >= 3 sec
+    kButtonPressTypeB1,
+    kButtonPressTypeB2,
+    kButtonPressTypeB3,
 
     kButtonPressLast,
+
+    //+3sek
+    kButtonPressTypeB1Long,
+    kButtonPressTypeB2Long,
+    kButtonPressTypeB3Long,
 } t_buttonPressType;
 
 static inline void init_led_pin(uint32_t pin_led){
@@ -238,56 +242,41 @@ void led_blink_id(int id){
 
 t_buttonPressType detectButtonPress(void){
     static uint64_t lastButtonSwitchTime = 0;
-    static bool lastButtonState = false;
     static t_buttonPressType lastRet = kButtonPressTypeNone;
 
     t_buttonPressType ret = kButtonPressTypeNone;
 
     uint64_t curTime = time_us_64();
-    bool curState = !gpio_get(PIN_BUTTON1);
 
     /*
         Perform some manual debouncing
     */
     uint64_t tdiff = curTime - lastButtonSwitchTime;
     if (tdiff > USEC_PER_MSEC*1){
-        float secsPressed = (float)tdiff / USEC_PER_SEC;
-        if (secsPressed < 1.5){
-            ret = kButtonPressTypeShort;
-        }else if (secsPressed < 3){
-            ret = kButtonPressTypeMid;
-        }else {
-            ret = kButtonPressTypeLong;
-        }
 
         if (button_get_edge(PIN_BUTTON1)){
-          return kButtonPressTypeShort;
+          ret = kButtonPressTypeB1;
         }
 
         if (button_get_edge(PIN_BUTTON2)){
-          return kButtonPressTypeMid;
+          ret = kButtonPressTypeB2;
         }
 
         if (button_get_edge(PIN_BUTTON3)){
-          return kButtonPressTypeLong;
+          ret = kButtonPressTypeB3;
         }
 
-        if (lastButtonState){
-            if (lastRet == kButtonPressLast-1){
-                ret = kButtonPressTypeNone;
+        if (ret != lastRet){
+            lastButtonSwitchTime = curTime;
+            if (tdiff > USEC_PER_SEC*3 && lastRet != kButtonPressTypeNone && ret == kButtonPressTypeNone){
+                ret = lastRet+kButtonPressLast; //long press
+                lastRet = kButtonPressTypeNone;
             }else{
                 lastRet = ret;
             }
-        }
-
-        if (!lastButtonState || (curState && ret != kButtonPressLast-1)){
+        }else{
             ret = kButtonPressTypeNone;
         }
-        if (curState != lastButtonState){
-            lastButtonSwitchTime = curTime;
-            lastButtonState = curState;
-            lastRet = kButtonPressTypeNone;
-        }        
     }
 
     return ret;
@@ -295,6 +284,7 @@ t_buttonPressType detectButtonPress(void){
 
 static bool gColobusWantsWake = false;
 void colobus_wake_runloop(){
+    if (gIsTCMiniMode) return;
     if (gColobusWantsWake){
         while (gIsSWDTaskActive){
             tight_loop_contents();
@@ -311,6 +301,25 @@ void colobus_wake_runloop(){
 
 void colobus_perform_wake(){
     gColobusWantsWake = true;
+}
+
+void colobus_perform_dfu(){
+    if (gIsTCMiniMode){
+        tcmini_vmd_apple_send_dfu();
+    }else{
+        gWantTristarDFU = true;
+        gWantTristarReset = true;
+        colobus_perform_wake();
+    }
+}
+
+void colobus_perform_reset(){
+    if (gIsTCMiniMode){
+        tcmini_vmd_apple_send_reboot();
+    }else{
+        gWantTristarReset = true;
+        colobus_perform_wake();
+    }
 }
 
 int task_spam(){
@@ -341,15 +350,21 @@ int task_spam(){
         if (gDPIDR == 0x5ba02477){
             //s7002
             uart_ctrl_reg = 0xc6e00004;
-        }else if (gDPIDR == 0x4ba02477){
+        }else if (gDPIDR == 0x4ba02477){ //generic UART over SWD
             //s8002
             uart_ctrl_reg = 0xC83B401C;
             {
                 uint32_t memdata = 0;
+                /*
+                    Peripheral ID 0x00001c81ad is UART (FIFO)
+                */
                 if (SWD_readmem(0x80000004, &memdata) == SWD_RSP_OK){
                     if (memdata == 0x50300003){
                         //actually t8011 (ATV4K)
-                        uart_ctrl_reg = 0xd063401C;
+                        uart_ctrl_reg = 0xD063401C;
+                    } else if (memdata == 0x7d380003){
+                        //actually t8020 (ATV4K 2nd)
+                        uart_ctrl_reg = 0xFD13401C;
                     }
                 }
             }
@@ -394,7 +409,7 @@ void task_swd(){
             if (!task_spam()){
                 gSpamFails = 0;
             }else{
-                if ((gSpamFails++) & 0xF >= 10){
+                if (((gSpamFails++) & 0xF) >= 10){
                     gWantSWDInitTime = time_us_64() + 10*USEC_PER_MSEC;
                     /*
                         One tristar poll cycle is ~7.6ms.
@@ -476,16 +491,13 @@ void myusb_task(){
     line[didRead] = '\0';
     if (!strcmp(line, "reset")){
       tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\r\n");
-      gWantTristarReset = true;
-      colobus_perform_wake();
+      colobus_perform_reset();
     } else if (!strcmp(line, "usbliter8")){
       tud_cdc_n_write_str(ITF_CONTROL, "entering DFU with exploit!\r\n");
       colobus_perform_usbliter8();
     } else if (!strcmp(line, "dfu")){
       tud_cdc_n_write_str(ITF_CONTROL, "entering DFU!\r\n");
-      gWantTristarReset = true;
-      gWantTristarDFU = true;
-      colobus_perform_wake();
+      colobus_perform_dfu();
     } else if (!strcmp(line, "rb")){
       watchdog_reboot(0,0,0);
     } else if (!strcmp(line, "bl")){
@@ -609,9 +621,18 @@ int main(){
       isKisMode = true;
     }
     
-    lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
+    if (!tcmini_init()){
+        gIsTCMiniMode = true;
+        gCableIsInverted = false;
+        // gWantDCSDInit = true;
+        puart_init(DCSD_TX_PIN,DCSD_RX_PIN);
+        gPUARTIsInited = true;
+        gpio_pull_up(DCSD_TX_PIN);
+    }else{
+        lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
+        colobus_perform_wake();
+    }
 
-    colobus_perform_wake();
 
     usb_start();
     usb_bus_init();
@@ -629,7 +650,7 @@ int main(){
         t_buttonPressType bpress = detectButtonPress();
         if (bpress){
             led_blink_id(bpress);
-            if (bpress == kButtonPressTypeShort){
+            if (bpress == kButtonPressTypeB1){
                 gSWDModeIsSpam = !gSWDModeIsSpam;      
                 if (isKisMode){
                   if (gSWDModeIsSpam){
@@ -640,18 +661,14 @@ int main(){
                   colobus_perform_wake();              
                 }          
                 
-            }else if (bpress == kButtonPressTypeMid && !isKisMode){
-                gWantTristarReset = true;
-                colobus_perform_wake();
-
-            }else if (bpress == kButtonPressTypeLong){
+            }else if (bpress == kButtonPressTypeB2 && !isKisMode){
+                colobus_perform_reset();
+            }else if (bpress == kButtonPressTypeB3){
                 if (gWantTristarReset){
                     gWantTristarReset = false;
                     gWantTristarDFU = false;
                 }else{
-                    gWantTristarReset = true;
-                    gWantTristarDFU = true;
-                    colobus_perform_wake();
+                    colobus_perform_dfu();
                 }
             }        
         }
@@ -659,7 +676,7 @@ int main(){
         if (isKisMode){
           gpio_put(PIN_LED2, gSWDModeIsSpam);
         }else{
-          gpio_put(PIN_LED2, gCableIsInverted);
+          gpio_put(PIN_LED2, gCableIsInverted || gIsTCMiniMode);
         }
         gpio_put(PIN_LED3, gWantTristarReset);
         
@@ -704,5 +721,6 @@ int main(){
         }
         usbliter8_task();
         myusb_task();
+        tcmini_task();
     }
 }

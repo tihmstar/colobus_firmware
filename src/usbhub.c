@@ -1,4 +1,5 @@
 #include "usbhub.h"
+#include "macros.h"
 
 #include <pico/time.h>
 #include <hardware/gpio.h>
@@ -7,8 +8,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
-
-#define ARRAYOF(a) (sizeof(a)/sizeof(*a))
 
 #define USB_VID 0x6874
 #define USB_PID 0x6268
@@ -159,6 +158,8 @@ void usbhub_init(){
 
 void usbhub_deinit(){
   i2c_deinit(i2c1);
+  gpio_set_function(USBHUB_PIN_SDA, GPIO_FUNC_NULL);
+  gpio_set_function(USBHUB_PIN_SCL, GPIO_FUNC_NULL);
 }
 
 #pragma mark public easy-use

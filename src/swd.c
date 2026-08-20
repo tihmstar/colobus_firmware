@@ -13,7 +13,6 @@
 
 #define SWD_PIO pio2
 
-#define ARRAYOF(arr) (sizeof(arr)/sizeof(*arr))
 
 /*
     SWD_CLK = swd_base + 0

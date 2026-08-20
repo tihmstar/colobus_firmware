@@ -4,7 +4,6 @@
 #include <tusb.h>
 
 #include <macros.h>
-#define ARRAYOF(a) (sizeof(a)/sizeof(*a))
 
 #pragma mark defines
 enum COLOBUS_CMDS {

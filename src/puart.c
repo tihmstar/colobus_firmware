@@ -36,6 +36,7 @@ void puart_init(int uart_rx, int uart_tx){
         sm_config_set_in_shift(&c, true, false, 32);
         sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
 
+        gpio_set_function(uart_rx, GPIO_FUNC_PIO0 + pio_get_index(PUART_PIO));
         pio_sm_set_consecutive_pindirs(PUART_PIO, gPuart_sm, uart_rx, 1, false);
 
         pio_sm_init(PUART_PIO, gPuart_sm, gPuart_rx_pio_pc, &c);

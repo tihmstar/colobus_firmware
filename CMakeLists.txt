@@ -48,6 +48,7 @@ add_executable(${PROJECT_NAME}
     src/lightning.c
     src/swd.c
     src/tristar.c
+    src/tcmini.c
     src/probe.c
     src/puart.c
     src/usb_descriptors.c
