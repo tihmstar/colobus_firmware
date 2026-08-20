@@ -345,7 +345,7 @@ int task_spam(){
                 gDPIDR = data;
                 cassure((ack = SWD_DP_write_CTRL(0x50000000)) == SWD_RSP_OK);
                 cassure((ack = SWD_DP_write_SELECT(0x01000000)) == SWD_RSP_OK);
-                cassure((ack = SWD_AP_write_CSW(0xA2000012)) == SWD_RSP_OK);
+                cassure((ack = SWD_AP_write_CSW(0xA2000002)) == SWD_RSP_OK);
             }
         }
     }
@@ -388,44 +388,47 @@ int task_spam(){
         uint64_t curTime = time_us_64();
 
         if (sSpamContinueTime < curTime){
-            uint32_t data = 0;
+            uint32_t data[0x20] = {};
             int cnt = 0;
             if (tud_cdc_n_write_available(dstitf) > 1){
-                if ((ack = SWD_readmem(uart_ctrl_reg + -4, &data)) == SWD_RSP_OK) {
-                    cnt = data & 0x7f;
+                if ((ack = SWD_readmem(uart_ctrl_reg + -4, &data[0])) == SWD_RSP_OK) {
+                    cnt = data[0] & 0x7f;
                 }
             }else{
                 hasdata = true;
             }
-            while (cnt > 0 && tud_cdc_n_write_available(dstitf) >= 4){
-                if (cnt >= 4){
-                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x0C, &data)) != SWD_RSP_OK) break;
-                    cnt -= 4;
+            uint32_t maxread = 0;
+            while (cnt > 0 && (maxread = tud_cdc_n_write_available(dstitf)) >= 4){
+                maxread = MIN(cnt,maxread);
+                uint32_t bulkread = maxread/4;
+                if (bulkread){
+                    if ((ack = SWD_readmem_multi(uart_ctrl_reg + 0x0C, &data[0], bulkread)) != SWD_RSP_OK) break;
+                    cnt -= 4*bulkread;
                     hasdata = true;
-                    tud_cdc_n_write(dstitf, &data, 4);
-                }else if (cnt == 3){                
-                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x08, &data)) != SWD_RSP_OK) break;
-                    cnt = data & 0x7f;
+                    tud_cdc_n_write(dstitf, &data[0], 4*bulkread);
+                }else if (maxread == 3){
+                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x08, &data[0])) != SWD_RSP_OK) break;
+                    cnt = data[0] & 0x7f;
                     if (!cnt) break;
                     cnt -= 3;
                     hasdata = true;
-                    tud_cdc_n_write_char(dstitf, data >> 8);
-                    tud_cdc_n_write_char(dstitf, data >> 16);
-                    tud_cdc_n_write_char(dstitf, data >> 24);
-                }else if (cnt == 2){                
-                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x04, &data)) != SWD_RSP_OK) break;
-                    cnt = data & 0x7f;
+                    tud_cdc_n_write_char(dstitf, data[0] >> 8);
+                    tud_cdc_n_write_char(dstitf, data[0] >> 16);
+                    tud_cdc_n_write_char(dstitf, data[0] >> 24);
+                }else if (maxread == 2){
+                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x04, &data[0])) != SWD_RSP_OK) break;
+                    cnt = data[0] & 0x7f;
                     if (!cnt) break;
                     cnt -= 2;
                     hasdata = true;
-                    tud_cdc_n_write_char(dstitf, data >> 8);
-                    tud_cdc_n_write_char(dstitf, data >> 16);
+                    tud_cdc_n_write_char(dstitf, data[0] >> 8);
+                    tud_cdc_n_write_char(dstitf, data[0] >> 16);
                 }else{
-                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data)) != SWD_RSP_OK) break;
-                    cnt = data & 0x7f;
+                    if ((ack = SWD_readmem(uart_ctrl_reg + 0x00, &data[0])) != SWD_RSP_OK) break;
+                    cnt = data[0] & 0x7f;
                     if (!cnt--) break;
                     hasdata = true;
-                    tud_cdc_n_write_char(dstitf, data >> 8);
+                    tud_cdc_n_write_char(dstitf, data[0] >> 8);
                 }
             }
             if (ack == SWD_RSP_FAULT){
@@ -440,7 +443,8 @@ int task_spam(){
                 /*
                     Even after UART is enabled, USB transfers keep dying if we SPAM too hard :/
                 */
-                sSpamContinueTime = curTime+10*USEC_PER_MSEC;
+               if (!cnt) sSpamContinueTime = curTime+30*USEC_PER_MSEC;
+               else sSpamContinueTime = curTime+10*USEC_PER_MSEC;
             }
         }
     }
