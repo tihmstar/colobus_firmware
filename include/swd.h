@@ -16,6 +16,7 @@ int swd_read(uint8_t req, uint32_t *val);
 int swd_write(uint8_t req, uint32_t val);
 
 int SWD_readmem(uint32_t addr, uint32_t *data);
+int SWD_readmem_multi(uint32_t addr, uint32_t *data, uint8_t cnt);
 
 
 #define SWD_RSP_OK          0b001

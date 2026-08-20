@@ -60,7 +60,7 @@ int swd_init(int swd_io, int swd_clk){
         pio_sm_set_enabled(SWD_PIO, gSWD_sm, true);
     }
 
-    swd_set_freq_hz(1e6);
+    swd_set_freq_hz(4e6);
     swd_reset();
     return 0;
 }
@@ -274,6 +274,19 @@ int SWD_readmem(uint32_t addr, uint32_t *data){
     cassure((ack = SWD_AP_write_TAR(addr)) == SWD_RSP_OK);
     cassure((ack = SWD_AP_read_DRW(data)) == SWD_RSP_OK);
     cassure((ack = SWD_DP_read_RDBUFF(data)) == SWD_RSP_OK);
+error:
+    return ack;
+}
+int SWD_readmem_multi(uint32_t addr, uint32_t *data, uint8_t cnt){
+    int err = 0;
+    int ack = 0;
+    size_t i = 0;
+    cassure((ack = SWD_AP_write_TAR(addr)) == SWD_RSP_OK);
+    cassure((ack = SWD_AP_read_DRW(data)) == SWD_RSP_OK);
+    for (i = 0; i+1 < cnt; i++){
+        cassure((ack = SWD_AP_read_DRW(&data[i])) == SWD_RSP_OK);
+    }
+    cassure((ack = SWD_DP_read_RDBUFF(&data[i])) == SWD_RSP_OK);
 error:
     return ack;
 }
