@@ -2,8 +2,9 @@
 #define PUART_H
 
 #include <stdbool.h>
+#include <hardware/pio.h>
 
-void puart_init(int uart_rx, int uart_tx);
+void puart_init(PIO pio, int uart_rx, int uart_tx);
 void puart_deinit(void);
 
 char puart_getc();

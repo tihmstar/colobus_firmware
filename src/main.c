@@ -547,7 +547,7 @@ void myusb_task(){
       tud_cdc_n_write_str(ITF_CONTROL, "resetting device!\r\n");
       colobus_perform_reset();
     } else if (!strcmp(line, "usbliter8")){
-      tud_cdc_n_write_str(ITF_CONTROL, "entering DFU with exploit!\r\n");
+      tud_cdc_n_write_str(ITF_CONTROL, "exploiting!\r\n");
       colobus_perform_usbliter8();
     } else if (!strcmp(line, "dfu")){
       tud_cdc_n_write_str(ITF_CONTROL, "entering DFU!\r\n");
@@ -681,8 +681,7 @@ int main(){
     if (!tcmini_init()){
         gIsTCMiniMode = true;
         gCableIsInverted = false;
-        // gWantDCSDInit = true;
-        puart_init(DCSD_TX_PIN,DCSD_RX_PIN);
+        puart_init(pio0,DCSD_TX_PIN,DCSD_RX_PIN);
         gPUARTIsInited = true;
         gpio_pull_up(DCSD_TX_PIN);
     }else{
@@ -749,7 +748,7 @@ int main(){
 
         if (gWantPUARTInit){
             if (gWantPUARTInit > 0){
-                puart_init(PIN_PUART_RX_INVERTED(gCableIsInverted),PIN_PUART_TX_INVERTED(gCableIsInverted));
+                puart_init(pio1,PIN_PUART_RX_INVERTED(gCableIsInverted),PIN_PUART_TX_INVERTED(gCableIsInverted));
                 gPUARTIsInited = true;
             }else{
                 gPUARTIsInited = false;
