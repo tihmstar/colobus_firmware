@@ -12,7 +12,7 @@
 #include <tusb.h>
 #include <typec/pd_types.h>
 
-#define TCMINI_DBG
+// #define TCMINI_DBG
 #define TCMINI_VDM_LOG
 #define TCMINI_PD_LOG
 
