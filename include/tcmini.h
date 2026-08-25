@@ -16,6 +16,7 @@ enum TCMINI_PIN_MAPPING{
 };
 
 typedef void (*t_tcmini_vdm_cb)(uint32_t *data, uint8_t cnt);
+typedef void (*t_tcmini_dev_cb)(bool isConnected, bool iscc2Polarity);
 
 int tcmini_init();
 void tcmini_deinit();
@@ -23,6 +24,7 @@ void tcmini_task();
 
 bool tcmini_is_device_connected();
 void tcmini_register_vdm_cb(t_tcmini_vdm_cb cb);
+void tcmini_register_dev_cb(t_tcmini_dev_cb cb);
 
 int tcmini_vmd_send(const uint32_t *data, uint8_t cnt);
 int tcmini_vdm_apple_perform_action(bool exit, 

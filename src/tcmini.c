@@ -44,6 +44,7 @@ union TCMinitIRQs{
 static struct CDevice gDev = {};
 static bool gIRQIsPending = false;
 static t_tcmini_vdm_cb gVDMCB = NULL;
+static t_tcmini_dev_cb gDevCB = NULL;
 
 #pragma mark defines
 static int tcmini_readbyte(uint8_t addr, uint8_t *data);
@@ -292,6 +293,7 @@ static int tcmini_handle_pd_packet(){
 #endif
         gDev.isInited = true;
         tcmini_vmd_apple_send_map_uart(kTCMINI_PIN_MAPPING_SBU);
+        if (gDevCB) gDevCB(true, gDev.cc2Polarity);
     }
         break;
     
@@ -446,6 +448,7 @@ static void tcmini_irq(uint gpio, uint32_t event_mask){
 
 static int tcmini_deinitCDevice(struct CDevice *dev){
     int err = 0;
+    if (gDevCB) gDevCB(false, false);
     memset(dev, 0, sizeof(*dev));
     cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
         0,
@@ -794,6 +797,10 @@ bool tcmini_is_device_connected(){
 
 void tcmini_register_vdm_cb(t_tcmini_vdm_cb cb){
     gVDMCB = cb;
+}
+
+void tcmini_register_dev_cb(t_tcmini_dev_cb cb){
+    gDevCB = cb;
 }
 
 int tcmini_vmd_send(const uint32_t *data, uint8_t cnt){

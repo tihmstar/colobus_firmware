@@ -99,23 +99,25 @@ int gUSBLiter8DoIdentify = 0;
 int gUSBLiter8DoExploit = 0;
 uint64_t gUSBLiter8DFUEnterTime = 0;
 
-void dcsd_init(void){
-    if (!gDCSDIsInited){
-        uart_init(DCSD_UART, 115200);
-        gpio_set_function(DCSD_TX_PIN, GPIO_FUNC_UART);
-        gpio_set_function(DCSD_RX_PIN, GPIO_FUNC_UART);
-        gDCSDIsInited = true;
+
+#pragma mark callbacks
+static void tcmini_connection_cb(bool isConnected, bool iscc2Polarity){
+    if (!isConnected){
+        puart_deinit();
+        gPUARTIsInited = false;
+    }else{
+        if (iscc2Polarity){
+            puart_init(pio0,DCSD_RX_PIN,DCSD_TX_PIN);
+            gpio_pull_up(DCSD_RX_PIN);
+        }else{
+            puart_init(pio0,DCSD_TX_PIN,DCSD_RX_PIN);
+            gpio_pull_up(DCSD_TX_PIN);
+        }
+        gPUARTIsInited = true;
     }
 }
 
-void dcsd_deinit(void){
-    if (gDCSDIsInited){
-        gDCSDIsInited = false;
-        uart_deinit(DCSD_UART);
-    }
-}
-
-void lightning_callback(const void *buf, size_t bufSize){
+static void lightning_callback(const void *buf, size_t bufSize){
     uint8_t *req8 = (uint8_t*)buf;
     uint32_t *req32 = (uint32_t*)buf;
 
@@ -158,6 +160,23 @@ void lightning_callback(const void *buf, size_t bufSize){
         } else if (gWantTristarDFU){
             gWantTristarDFU = false;
         }
+    }
+}
+
+#pragma mark functions
+void dcsd_init(void){
+    if (!gDCSDIsInited){
+        uart_init(DCSD_UART, 115200);
+        gpio_set_function(DCSD_TX_PIN, GPIO_FUNC_UART);
+        gpio_set_function(DCSD_RX_PIN, GPIO_FUNC_UART);
+        gDCSDIsInited = true;
+    }
+}
+
+void dcsd_deinit(void){
+    if (gDCSDIsInited){
+        gDCSDIsInited = false;
+        uart_deinit(DCSD_UART);
     }
 }
 
@@ -681,9 +700,7 @@ int main(){
     if (!tcmini_init()){
         gIsTCMiniMode = true;
         gCableIsInverted = false;
-        puart_init(pio0,DCSD_TX_PIN,DCSD_RX_PIN);
-        gPUARTIsInited = true;
-        gpio_pull_up(DCSD_TX_PIN);
+        tcmini_register_dev_cb(tcmini_connection_cb);
     }else{
         lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
         colobus_perform_wake();
