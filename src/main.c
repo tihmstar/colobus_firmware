@@ -704,6 +704,7 @@ int main(){
     }else{
         lightning_init(PIN_SDQ_INVERTED(gCableIsInverted));
         colobus_perform_wake();
+        dcsd_init();
     }
 
 
