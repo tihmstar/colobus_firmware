@@ -388,6 +388,9 @@ int task_spam(){
                     } else if (memdata == 0x7d380003){
                         //actually t8020 (ATV4K 2nd)
                         uart_ctrl_reg = 0xFD13401C;
+                    } else if (memdata == 0x7d300003){
+                        //actually t8006 (Apple Watch S4)
+                        uart_ctrl_reg = 0xFD13401C;
                     }
                 }
             }
