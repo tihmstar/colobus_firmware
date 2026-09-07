@@ -22,6 +22,14 @@ int tcmini_init();
 void tcmini_deinit();
 void tcmini_task();
 
+void tcmini_set_mode(bool isDevice);
+void tcmini_ccManualMode(bool on, bool cc2Polarity);
+void tcmini_set_cap(uint32_t cap);
+int tcmini_powerproxy(bool enable);
+
+void tcmini_test();
+void tcmini_stop();
+
 bool tcmini_is_device_connected();
 void tcmini_register_vdm_cb(t_tcmini_vdm_cb cb);
 void tcmini_register_dev_cb(t_tcmini_dev_cb cb);
@@ -37,5 +45,6 @@ int tcmini_vdm_apple_perform_action(bool exit,
 int tcmini_vmd_apple_send_reboot();
 int tcmini_vmd_apple_send_dfu();
 int tcmini_vmd_apple_send_map_uart(enum TCMINI_PIN_MAPPING mapping);
+int tcmini_pd_sendreq(int pos);
 
 #endif // TCMINI_H

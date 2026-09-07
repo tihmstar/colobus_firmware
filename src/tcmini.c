@@ -12,7 +12,7 @@
 #include <tusb.h>
 #include <typec/pd_types.h>
 
-// #define TCMINI_DBG
+#define TCMINI_DBG
 #define TCMINI_VDM_LOG
 #define TCMINI_PD_LOG
 
@@ -45,6 +45,11 @@ static struct CDevice gDev = {};
 static bool gIRQIsPending = false;
 static t_tcmini_vdm_cb gVDMCB = NULL;
 static t_tcmini_dev_cb gDevCB = NULL;
+static bool gIsDeviceMode = false;
+static uint32_t gBorrowCap = 0;
+static bool gIsCCManualMode = false;
+static bool gManualModeIscc2Polarity = false;
+static bool gIsPowerProxy = false;
 
 #pragma mark defines
 static int tcmini_readbyte(uint8_t addr, uint8_t *data);
@@ -160,15 +165,29 @@ static int tcmini_pd_recv(pd_header_t *header, uint32_t *data, size_t dataCnt){
 
     do{
         cassure(!tcmini_readbyte(FUSB_REG_STATUS1, &val));
+// #ifdef TCMINI_PD_LOG
+//         {
+//             char buf[0x100] = {};
+//             snprintf(buf,sizeof(buf),"[tcmini] PD status1=0x%02x\r\n",val);
+//             tud_cdc_n_write_str(2, buf);
+//         }
+// #endif
         cassure(!(val & FUSB_STATUS1_VAL_RX_EMPTY));
         val = FUSB_REG_FIFOS;
         cassure(i2c_write_blocking(i2c1, FUSB_DEVICE, &val, sizeof(val), true) == 1);
         cassure(i2c_read_blocking(i2c1, FUSB_DEVICE, (uint8_t*)&rcv, sizeof(rcv), true) == sizeof(rcv));
+// #ifdef TCMINI_PD_LOG
+//         {
+//             char buf[0x100] = {};
+//             snprintf(buf,sizeof(buf),"[tcmini] SOP=0x%02x PDHDR=0x%04x\r\n",rcv.sop,*(uint16_t*)&rcv.hdr);
+//             tud_cdc_n_write_str(2, buf);
+//         }
+// #endif
         cassure(rcv.hdr.n_data_obj <= dataCnt);
         dataLen = rcv.hdr.n_data_obj*sizeof(*data);
         if (dataLen) cassure(i2c_read_blocking(i2c1, FUSB_DEVICE, (uint8_t*)data, dataLen, true) == dataLen);
         cassure(i2c_read_blocking(i2c1, FUSB_DEVICE, (uint8_t*)&crc, sizeof(crc), false) == sizeof(crc));
-    }while (rcv.hdr.msg_type == PD_CTRL_GOOD_CRC);
+    }while (rcv.hdr.msg_type == PD_CTRL_GOOD_CRC && !gIsDeviceMode);
     memcpy(header, &rcv.hdr, sizeof(*header));
 
 #ifdef TCMINI_DBG
@@ -194,45 +213,119 @@ static int tcmini_pd_recv(pd_header_t *header, uint32_t *data, size_t dataCnt){
 #endif
 
 error:
+    if (err){
+// #ifdef TCMINI_PD_LOG
+//         {
+//             char buf[0x100] = {};
+//             snprintf(buf,sizeof(buf),"[tcmini] tcmini_pd_recv err=%d\r\n",err);
+//             tud_cdc_n_write_str(2, buf);
+//         }
+// #endif        
+    }
     return err;
 }
 
 #define uprintf(a...)do { char buf[0x100] = {}; snprintf(buf,sizeof(buf),a); tud_cdc_n_write_str(2, buf);} while(0)
 
+static void parse_hdr(pd_header_t hdr){
+    uprintf("\tmsg_type: ");
+    #define PrintElem(e) case e: uprintf(#e); break
+    switch (hdr.msg_type){
+    PrintElem(PD_DATA_RESERVED);
+    PrintElem(PD_DATA_SOURCE_CAP);
+    PrintElem(PD_DATA_REQUEST);
+    PrintElem(PD_DATA_BIST);
+    PrintElem(PD_DATA_SINK_CAP);
+    PrintElem(PD_DATA_BATTERY_STATUS);
+    PrintElem(PD_DATA_ALERT);
+    PrintElem(PD_DATA_GET_COUNTRY_INFO);
+    PrintElem(PD_DATA_ENTER_USB);
+    PrintElem(PD_DATA_EPR_REQUEST);
+    PrintElem(PD_DATA_EPR_MODE);
+    PrintElem(PD_DATA_SRC_INFO);
+    PrintElem(PD_DATA_REVISION);
+    PrintElem(PD_DATA_RESERVED_13);
+    PrintElem(PD_DATA_RESERVED_14);
+    PrintElem(PD_DATA_VENDOR_DEFINED);
+    default:
+        uprintf("UNKNOWN");
+        break;
+    }
+    uprintf("\r\n");
+    uprintf("\tdata_role: %s\r\n", hdr.data_role ? "UFP" : "DFP");
+    uprintf("\tspecs_rev: %d\r\n", hdr.specs_rev);
+    uprintf("\tpower_role: %s\r\n", hdr.power_role ? "Sink" : "Source");
+    uprintf("\tmsg_id: %d\r\n", hdr.msg_id);
+    uprintf("\tn_data_obj: %d\r\n", hdr.n_data_obj);
+    uprintf("\textended: %d\r\n", hdr.extended);
+}
+
+static int parse_src_cap(uint32_t val){
+    int fixedVoltage = -1;
+    union pd_pdo_t{
+        pd_pdo_fixed_t fixed;
+        pd_pdo_battery_t bat;
+        pd_pdo_variable_t var;
+        pd_pdo_apdo_t apdo;
+    };
+    union pd_pdo_t *pdo = (union pd_pdo_t*)&val;
+
+    uprintf("PDO:\r\n");
+    switch (pdo->fixed.type){
+    case PD_PDO_TYPE_FIXED:
+    {
+        uprintf("\ttype: PD_PDO_TYPE_FIXED\r\n");
+        float curMax = pdo->fixed.current_max_10ma*0.01;
+        uprintf("\tcurrent_max: %.03fA\r\n",curMax);
+        float voltage = pdo->fixed.voltage_50mv*0.05;
+        fixedVoltage = voltage;
+        uprintf("\tvoltage: %.02fV\r\n",voltage);
+        uprintf("\tcurrent_peak: %d\r\n",pdo->fixed.current_peak);
+        uprintf("\tepr_mode_capable: %d\r\n",pdo->fixed.epr_mode_capable);
+        uprintf("\tunchunked_ext_msg_support: %d\r\n",pdo->fixed.unchunked_ext_msg_support);
+        uprintf("\tdual_role_data: %d\r\n",pdo->fixed.dual_role_data);
+        uprintf("\tusb_comm_capable: %d\r\n",pdo->fixed.usb_comm_capable);
+        uprintf("\tunconstrained_power: %d\r\n",pdo->fixed.unconstrained_power);
+        uprintf("\tusb_suspend_supported: %d\r\n",pdo->fixed.usb_suspend_supported);
+        uprintf("\tdual_role_power: %d\r\n",pdo->fixed.dual_role_power);
+    }
+        break;
+
+    case PD_PDO_TYPE_APDO:
+    {
+        uprintf("\ttype: PD_PDO_TYPE_APDO\r\n");
+        float curMax = pdo->apdo.current_max_50ma*0.05;
+        uprintf("\tcurrent_max: %.02fA\r\n",curMax);
+        float voltage_min = pdo->apdo.voltage_min_100mv*0.1;
+        uprintf("\tvoltage_min: %.02fV\r\n",voltage_min);
+        float voltage_max = pdo->apdo.voltage_max_100mv*0.1;
+        uprintf("\tvoltage_max: %.02fV\r\n",voltage_max);
+        uprintf("\tpps_power_limited: %d\r\n",pdo->apdo.pps_power_limited);
+        uprintf("\tspr_programmable: %d\r\n",pdo->apdo.spr_programmable);
+    }
+    break;
+    
+    default:
+        uprintf("unsupported PDO_TYPE: %d\r\n",pdo->fixed.type);
+        break;
+    }
+    return fixedVoltage;
+}
+
 static void parse_request(uint32_t value){
-    // Check reserved bits
-    if (value & (1 << 31) || (value & 0x00F00000))
-    {
-        uprintf("Error: Reserved bits are not set to zero.\r\n");
-        return;
-    }
+    pd_rdo_fixed_variable_t *rdo = (pd_rdo_fixed_variable_t*)&value;
 
-    // Extract object position
-    uint32_t objectPosition = (value >> 28) & 0x07;
-    if (objectPosition == 0)
-    {
-        uprintf("Error: Object position is set to a reserved value.\r\n");
-        return;
-    }
-
-    // Extract flags
-    uint32_t giveBackFlag = (value >> 27) & 0x01;
-    uint32_t capabilityMismatch = (value >> 26) & 0x01;
-    uint32_t usbCommCapable = (value >> 25) & 0x01;
-    uint32_t noUSBSuspend = (value >> 24) & 0x01;
-
-    // Extract currents
-    uint32_t operatingCurrent = (value >> 10) & 0x03FF; // 10 bits for operating current
-    uint32_t maxOperatingCurrent = value & 0x03FF;      // 10 bits for max operating current
-
-    // Print details
-    uprintf("\tObject Position: %u\r\n", objectPosition);
-    uprintf("\tGiveBack Flag: %u\r\n", giveBackFlag);
-    uprintf("\tCapability Mismatch: %u\r\n", capabilityMismatch);
-    uprintf("\tUSB Communications Capable: %u\r\n", usbCommCapable);
-    uprintf("\tNo USB Suspend: %u\r\n", noUSBSuspend);
-    uprintf("\tOperating Current: %u mA\r\n", operatingCurrent * 10);
-    uprintf("\tMaximum Operating Current: %u mA\r\n", maxOperatingCurrent * 10);
+    float curMax = rdo->current_extremum_10ma*0.01;
+    uprintf("\tmax current: %.2f\r\n",curMax);
+    float curOp = rdo->current_operate_10ma*0.01;
+    uprintf("\t    current: %.2f\r\n",curOp);
+    uprintf("\tepr_mode_capable: %d\r\n",rdo->epr_mode_capable);
+    uprintf("\tunchunked_ext_msg_support: %d\r\n",rdo->unchunked_ext_msg_support);
+    uprintf("\tno_usb_suspend: %d\r\n",rdo->no_usb_suspend);
+    uprintf("\tusb_comm_capable: %d\r\n",rdo->usb_comm_capable);
+    uprintf("\tcapability_mismatch: %d\r\n",rdo->capability_mismatch);
+    uprintf("\tgive_back_flag: %d\r\n",rdo->give_back_flag);
+    uprintf("\tobject_position: %d\r\n",rdo->object_position);
 }
 
 static int tcmini_handle_pd_packet(){
@@ -241,68 +334,173 @@ static int tcmini_handle_pd_packet(){
     uint32_t pkts[8] = {};
 
     cassure(!tcmini_pd_recv(&hdr, pkts, ARRAYOF(pkts)));
-    switch (hdr.msg_type){
-    case PD_DATA_REQUEST:
-    {
-        cassure(hdr.n_data_obj >= 1);    
-#ifdef TCMINI_PD_LOG
+
+    if (gIsDeviceMode){
+        switch (hdr.msg_type){
+        case PD_DATA_SOURCE_CAP:
         {
-            char buf[0x100] = {};
-            snprintf(buf,sizeof(buf),"[tcmini] PD<REQUEST: 0x%08x\r\n",pkts[0]);
-            tud_cdc_n_write_str(2, buf);
+            parse_hdr(hdr);
+            cassure(gIsDeviceMode);
+            cassure(hdr.n_data_obj >= 1);
+            uint8_t minIdx = 0xFF;
+            uint8_t minVoltage = 15; //limit
+            for (int i=0; i<hdr.n_data_obj; i++){
+    #ifdef TCMINI_PD_LOG
+                {
+                    char buf[0x100] = {};
+                    snprintf(buf,sizeof(buf),"[tcmini] PD<SOURCE_CAP: 0x%08x\r\n",pkts[i]);
+                    tud_cdc_n_write_str(2, buf);
+                }
+    #endif
+                int curv = parse_src_cap(pkts[i]);
+                if (curv > 0){
+                    if (curv < minVoltage || curv <= 9){
+                        minIdx = i;
+                        minVoltage = curv;
+                        gBorrowCap = pkts[i];
+                    }
+                }
+            }
+            if (minIdx != 0xFF){
+    #ifdef TCMINI_PD_LOG
+                {
+                    char buf[0x100] = {};
+                    snprintf(buf,sizeof(buf),"[tcmini] found suitable voltage %dV at idx %d\r\n",minVoltage,minIdx);
+                    tud_cdc_n_write_str(2, buf);
+                }
+    #endif
+                {
+                    pd_header_t req = {
+                        .msg_type = PD_DATA_REQUEST,
+                        .power_role = PD_POWER_ROLE_SINK,
+                        .data_role = PD_DATA_ROLE_UFP,
+                        .msg_id = 0,
+                        .n_data_obj = 1,
+                        .specs_rev = PD_REV_20,
+                        .extended = 0,
+                    };
+                    pd_rdo_fixed_variable_t pdo = {
+                        .current_extremum_10ma = 100, //3A
+                        .current_operate_10ma = 100, //3A
+                        .reserved = 0,
+                        .epr_mode_capable = 0,
+                        .unchunked_ext_msg_support = 0,
+                        .no_usb_suspend = 1,
+                        .usb_comm_capable = 0,
+                        .capability_mismatch = 0,
+                        .give_back_flag = 0,
+                        .object_position = minIdx+1,
+                    };
+                    parse_request(*(uint32_t*)&pdo);
+                    cassure(!tcmini_pd_send(req, (uint32_t*)&pdo, false));
+                }
+
+            }
         }
-        parse_request(pkts[0]);
-#endif
-        {
-            pd_header_t rsp = {
-                .msg_type = PD_CTRL_ACCEPT,
-                .power_role = PD_POWER_ROLE_SOURCE,
-                .data_role = PD_DATA_ROLE_DFP,
-                .msg_id = 0,
-                .n_data_obj = 0,
-                .specs_rev = PD_REV_20,
-                .extended = 0,
-            };
-            cassure(!tcmini_pd_send(rsp, NULL, false));
-        }
-#ifdef TCMINI_PD_LOG
-        {
-            char buf[0x100] = {};
-            snprintf(buf,sizeof(buf),"[tcmini] PD>ACCEPT\r\n");
-            tud_cdc_n_write_str(2, buf);
-        }
-#endif
-        {
-            pd_header_t rsp = {
-                .msg_type = PD_CTRL_PS_READY,
-                .power_role = PD_POWER_ROLE_SOURCE,
-                .data_role = PD_DATA_ROLE_DFP,
-                .msg_id = 0,
-                .n_data_obj = 0,
-                .specs_rev = PD_REV_20,
-                .extended = 0,
-            };
-            cassure(!tcmini_pd_send(rsp, NULL, false));
-        }
-#ifdef TCMINI_PD_LOG
-        {
-            char buf[0x100] = {};
-            snprintf(buf,sizeof(buf),"[tcmini] PD>PS_RDY\r\n");
-            tud_cdc_n_write_str(2, buf);
-        }
-#endif
-        gDev.isInited = true;
-        tcmini_vmd_apple_send_map_uart(kTCMINI_PIN_MAPPING_SBU);
-        if (gDevCB) gDevCB(true, gDev.cc2Polarity);
-    }
-        break;
-    
-    case PD_DATA_VENDOR_DEFINED:
-        tcmini_handle_vmd_internal(pkts,hdr.n_data_obj);
         break;
 
-    default:
-        break;
+        case PD_CTRL_ACCEPT:
+#ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD<ACCEPT\r\n");
+                tud_cdc_n_write_str(2, buf);
+            }
+#endif
+            break;
+
+        case PD_CTRL_PS_READY:
+#ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD<PS_READY\r\n");
+                tud_cdc_n_write_str(2, buf);
+            }
+#endif
+            break;            
+
+        default:
+    #ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD<UNK %d\r\n",hdr.msg_type);
+                tud_cdc_n_write_str(2, buf);
+            }
+    #endif
+            break;
+        }
+    }else{
+        switch (hdr.msg_type){
+
+        case PD_DATA_REQUEST:
+        {
+            cassure(hdr.n_data_obj >= 1);    
+    #ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD<REQUEST: 0x%08x\r\n",pkts[0]);
+                tud_cdc_n_write_str(2, buf);
+            }
+            parse_request(pkts[0]);
+    #endif
+            {
+                pd_header_t rsp = {
+                    .msg_type = PD_CTRL_ACCEPT,
+                    .power_role = PD_POWER_ROLE_SOURCE,
+                    .data_role = PD_DATA_ROLE_DFP,
+                    .msg_id = 0,
+                    .n_data_obj = 0,
+                    .specs_rev = PD_REV_20,
+                    .extended = 0,
+                };
+                cassure(!tcmini_pd_send(rsp, NULL, false));
+            }
+    #ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD>ACCEPT\r\n");
+                tud_cdc_n_write_str(2, buf);
+            }
+    #endif
+            {
+                pd_header_t rsp = {
+                    .msg_type = PD_CTRL_PS_READY,
+                    .power_role = PD_POWER_ROLE_SOURCE,
+                    .data_role = PD_DATA_ROLE_DFP,
+                    .msg_id = 0,
+                    .n_data_obj = 0,
+                    .specs_rev = PD_REV_20,
+                    .extended = 0,
+                };
+                cassure(!tcmini_pd_send(rsp, NULL, false));
+            }
+    #ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD>PS_RDY\r\n");
+                tud_cdc_n_write_str(2, buf);
+            }
+    #endif
+            gDev.isInited = true;
+            tcmini_vmd_apple_send_map_uart(kTCMINI_PIN_MAPPING_SBU);
+            if (gDevCB) gDevCB(true, gDev.cc2Polarity);
+        }
+            break;
+        
+        case PD_DATA_VENDOR_DEFINED:
+            tcmini_handle_vmd_internal(pkts,hdr.n_data_obj);
+            break;
+
+        default:
+    #ifdef TCMINI_PD_LOG
+            {
+                char buf[0x100] = {};
+                snprintf(buf,sizeof(buf),"[tcmini] PD>UNK %d\r\n",hdr.msg_type);
+                tud_cdc_n_write_str(2, buf);
+            }
+    #endif
+            break;
+        }
     }
 
 error:
@@ -342,6 +540,7 @@ static int tcmini_pd_send_source_cap(){
     // uint32_t cap = 1UL << 31; /* Variable non-battery PS, 0V, 0mA */
     uint32_t cap = build_fixed_pdo();
 
+    if (gBorrowCap) cap = gBorrowCap;
     cassure(!tcmini_pd_send(hdr, &cap, false));
 error:
     return err;
@@ -422,6 +621,7 @@ static int tcmini_update_connected_status(){
     }
 #endif
     nowIsConnected = !(val & FUSB_STATUS0_VAL_COMP);
+    if (gIsDeviceMode) nowIsConnected ^=1;
     if (nowIsConnected == gDev.isConnected) return 0;
     gDev.isConnected = nowIsConnected;
 #ifdef TCMINI_DBG
@@ -485,29 +685,59 @@ static int tcmini_initCDevice(struct CDevice *dev){
     static uint8_t isCC1 = 0;
     static uint8_t isCC2 = 0;
 
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
-        FUSB_SWITCHES0_VAL_MEAS_CC1
-        | FUSB_SWITCHES0_VAL_MEAS_CC2
-        | FUSB_SWITCHES0_VAL_PU_EN1
-        | FUSB_SWITCHES0_VAL_PU_EN2,
-                        FUSB_SWITCHES0_VAL_MEAS_CC1
-                        | FUSB_SWITCHES0_VAL_PU_EN1
-    ));
-    sleep_us(250);
-    cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
+    if (gIsCCManualMode){
+        isCC1 = !gManualModeIscc2Polarity;
+        isCC2 = gManualModeIscc2Polarity;
+    }else{
+        if (gIsDeviceMode){
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                FUSB_SWITCHES0_VAL_MEAS_CC1
+                | FUSB_SWITCHES0_VAL_MEAS_CC2
+                | FUSB_SWITCHES0_VAL_PDWN1
+                | FUSB_SWITCHES0_VAL_PDWN2,
+                                FUSB_SWITCHES0_VAL_MEAS_CC1
+                                | FUSB_SWITCHES0_VAL_PDWN1
+            ));
+            sleep_us(250);
+            cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
+            isCC1 = !!(val & FUSB_STATUS0_VAL_COMP);
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                FUSB_SWITCHES0_VAL_MEAS_CC1
+                | FUSB_SWITCHES0_VAL_MEAS_CC2
+                | FUSB_SWITCHES0_VAL_PDWN1
+                | FUSB_SWITCHES0_VAL_PDWN2,
+                                FUSB_SWITCHES0_VAL_MEAS_CC2
+                                | FUSB_SWITCHES0_VAL_PDWN2
+            ));
+            sleep_us(250);
+            cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
+            isCC2 = !!(val & FUSB_STATUS0_VAL_COMP);
+        }else{
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                FUSB_SWITCHES0_VAL_MEAS_CC1
+                | FUSB_SWITCHES0_VAL_MEAS_CC2
+                | FUSB_SWITCHES0_VAL_PU_EN1
+                | FUSB_SWITCHES0_VAL_PU_EN2,
+                                FUSB_SWITCHES0_VAL_MEAS_CC1
+                                | FUSB_SWITCHES0_VAL_PU_EN1
+            ));
+            sleep_us(250);
+            cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
 
-    isCC1 = !(val & FUSB_STATUS0_VAL_COMP);
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
-        FUSB_SWITCHES0_VAL_MEAS_CC1
-        | FUSB_SWITCHES0_VAL_MEAS_CC2
-        | FUSB_SWITCHES0_VAL_PU_EN1
-        | FUSB_SWITCHES0_VAL_PU_EN2,
-                        FUSB_SWITCHES0_VAL_MEAS_CC2
-                        | FUSB_SWITCHES0_VAL_PU_EN2
-    ));
-    sleep_us(250);
-    cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
-    isCC2 = !(val & FUSB_STATUS0_VAL_COMP);
+            isCC1 = !(val & FUSB_STATUS0_VAL_COMP);
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                FUSB_SWITCHES0_VAL_MEAS_CC1
+                | FUSB_SWITCHES0_VAL_MEAS_CC2
+                | FUSB_SWITCHES0_VAL_PU_EN1
+                | FUSB_SWITCHES0_VAL_PU_EN2,
+                                FUSB_SWITCHES0_VAL_MEAS_CC2
+                                | FUSB_SWITCHES0_VAL_PU_EN2
+            ));
+            sleep_us(250);
+            cassure(!tcmini_readbyte(FUSB_REG_STATUS0, &val));
+            isCC2 = !(val & FUSB_STATUS0_VAL_COMP);
+        }
+    }
 
 #ifdef TCMINI_DBG
     {
@@ -517,11 +747,37 @@ static int tcmini_initCDevice(struct CDevice *dev){
     }
 #endif
 
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
-        0,
-                        FUSB_SWITCHES0_VAL_PU_EN1
-                        | FUSB_SWITCHES0_VAL_PU_EN2
-    ));
+    if (gIsDeviceMode){
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+            0,
+                            FUSB_SWITCHES0_VAL_PDWN1
+                            | FUSB_SWITCHES0_VAL_PDWN2
+        ));        
+    }else{
+        if (!gIsCCManualMode){
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                0,
+                                FUSB_SWITCHES0_VAL_PU_EN1
+                                | FUSB_SWITCHES0_VAL_PU_EN2
+            ));
+        }else{
+            if (gManualModeIscc2Polarity){
+                cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                    FUSB_SWITCHES0_VAL_PDWN2
+                    | FUSB_SWITCHES0_VAL_PU_EN1
+                    | FUSB_SWITCHES0_VAL_PU_EN2,
+                                    FUSB_SWITCHES0_VAL_PU_EN2
+                ));
+            }else{
+                cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                    FUSB_SWITCHES0_VAL_PDWN1
+                    | FUSB_SWITCHES0_VAL_PU_EN1
+                    | FUSB_SWITCHES0_VAL_PU_EN2,
+                                    FUSB_SWITCHES0_VAL_PU_EN1
+                ));
+            }
+        }
+    }
 
     if (isCC1 && !isCC2){
         gDev.cc2Polarity = false;
@@ -542,9 +798,7 @@ static int tcmini_initCDevice(struct CDevice *dev){
         ));
         cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
             FUSB_SWITCHES1_VAL_TXCC1
-            | FUSB_SWITCHES1_VAL_TXCC2
-            | FUSB_SWITCHES0_VAL_VCONN_CC1
-            | FUSB_SWITCHES0_VAL_VCONN_CC2,
+            | FUSB_SWITCHES1_VAL_TXCC2,
                     FUSB_SWITCHES1_VAL_TXCC2
                     | FUSB_SWITCHES1_VAL_AUTO_CRC
         ));
@@ -556,9 +810,7 @@ static int tcmini_initCDevice(struct CDevice *dev){
         ));
         cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
             FUSB_SWITCHES1_VAL_TXCC1
-            | FUSB_SWITCHES1_VAL_TXCC2
-            | FUSB_SWITCHES0_VAL_VCONN_CC1
-            | FUSB_SWITCHES0_VAL_VCONN_CC2,
+            | FUSB_SWITCHES1_VAL_TXCC2,
                     FUSB_SWITCHES1_VAL_TXCC1
                     | FUSB_SWITCHES1_VAL_AUTO_CRC
         ));
@@ -575,15 +827,25 @@ static int tcmini_initCDevice(struct CDevice *dev){
                 FUSB_CONTROL1_VAL_RX_FLUSH
     ));
 
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
-            0,
-                    FUSB_SWITCHES1_VAL_POWERROLE
-                    | FUSB_SWITCHES1_VAL_DATAROLE
-    ));
+    if (gIsDeviceMode){
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
+                FUSB_SWITCHES1_VAL_POWERROLE
+                | FUSB_SWITCHES1_VAL_DATAROLE,
+                        0
+        ));
+    }else{
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
+                0,
+                        FUSB_SWITCHES1_VAL_POWERROLE
+                        | FUSB_SWITCHES1_VAL_DATAROLE
+        ));
+    }
 
 
     cassure(!tcmini_writebyte(FUSB_REG_RESET, FUSB_RESET_VAL_PD_RESET));
-    cassure(!tcmini_pd_send_source_cap());
+    if (!gIsDeviceMode && gDev.isConnected){        
+        cassure(!tcmini_pd_send_source_cap());
+    }
 
 error:
     if (err){
@@ -605,81 +867,153 @@ static int tcmini_populate_defaults(){
     cassure(!tcmini_readbyte(FUSB_REG_DEVICE_ID, &val)); 
     cassure(val & 0x80);
 
-    //config
-    {
-        //setup device detection based on CC lines
+    if (!gIsDeviceMode){
+        //config
+        {
+            //setup device detection based on CC lines
+            cassure(!tcmini_cfg_clr_set(FUSB_REG_MEASURE, 
+                FUSB_MEASURE_VAL_MEAS_VBUS 
+                | FUSB_MEASURE_MASK_MDAC,
+                        FUSB_MEASURE_VAL_MDAC(0x20)
+            ));
+            if (!gIsCCManualMode){
+                cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                    FUSB_SWITCHES0_VAL_VCONN_CC1
+                    | FUSB_SWITCHES0_VAL_VCONN_CC2
+                    | FUSB_SWITCHES0_VAL_PDWN1
+                    | FUSB_SWITCHES0_VAL_PDWN2
+                    | FUSB_SWITCHES0_VAL_PU_EN1
+                    | FUSB_SWITCHES0_VAL_PU_EN2,
+                            FUSB_SWITCHES0_VAL_PU_EN1
+                            | FUSB_SWITCHES0_VAL_PU_EN2
+                            | FUSB_SWITCHES0_VAL_MEAS_CC1
+                            | FUSB_SWITCHES0_VAL_MEAS_CC2
+                ));                
+            }else{
+                if (gManualModeIscc2Polarity){
+                    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                        FUSB_SWITCHES0_VAL_VCONN_CC1
+                        | FUSB_SWITCHES0_VAL_VCONN_CC2
+                        | FUSB_SWITCHES0_VAL_PU_EN1
+                        | FUSB_SWITCHES0_VAL_PU_EN2,
+                                FUSB_SWITCHES0_VAL_PU_EN2
+                                | FUSB_SWITCHES0_VAL_MEAS_CC2
+                    ));   
+                }else{
+                    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
+                        FUSB_SWITCHES0_VAL_VCONN_CC1
+                        | FUSB_SWITCHES0_VAL_VCONN_CC2
+                        | FUSB_SWITCHES0_VAL_PU_EN1
+                        | FUSB_SWITCHES0_VAL_PU_EN2,
+                                FUSB_SWITCHES0_VAL_PU_EN1
+                                | FUSB_SWITCHES0_VAL_MEAS_CC1
+                    ));    
+                }
+            }
+        }
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL3, 
+            FUSB_CONTROL3_MASK_RETRIES,
+                    FUSB_CONTROL3_VAL_AUTO_RETRY
+                    | FUSB_CONTROL3_VAL_AUTO_HARDRESET
+                    | FUSB_CONTROL3_VAL_RETRIES(FUSB_CONTROL3_MAX_RETRIES)
+        ));    
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASK, 
+            FUSB_MASK_VAL_M_VBUSOK
+            | FUSB_MASK_VAL_M_BC_LVL
+            | FUSB_MASK_VAL_M_COMP_CHNG
+            | FUSB_MASK_VAL_M_COLLISION
+            | FUSB_MASK_VAL_M_ALERT
+            | FUSB_MASK_VAL_M_CRC_CHK,
+                    0
+        ));   
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKA, 
+            FUSB_MASKA_VAL_M_RETRYFAIL
+            | FUSB_MASKA_VAL_M_HARDSENT
+            | FUSB_MASKA_VAL_M_TXSENT
+            | FUSB_MASKA_VAL_M_HARDRST,
+                    0
+        ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKB, 
+            FUSB_MASKB_VAL_M_GCRCSENT,
+                    0
+        ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL0, 
+            FUSB_CONTROL0_VAL_INT_MASK
+            | FUSB_CONTROL0_HOST_CUR_MASK,
+                    FUSB_CONTROL0_VAL_HOST_CUR(FUSB_CONTROL0_HOST_CUR_DEFAULT_USB)
+        ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL1, 
+            0,
+                    FUSB_CONTROL1_VAL_RX_FLUSH
+                    | FUSB_CONTROL1_VAL_ENSOP1DB
+                    | FUSB_CONTROL1_VAL_ENSOP2DB
+                    | FUSB_CONTROL1_VAL_ENSOP1
+                    | FUSB_CONTROL1_VAL_ENSOP2
+        ));    
+        
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
+            FUSB_SWITCHES1_VAL_AUTO_CRC
+            | FUSB_SWITCHES1_MASK_SPECREV,
+                    FUSB_SWITCHES1_VAL_SPECREV(FUSB_SWITCHES1_SPECREV_1_0)
+        ));  
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_POWER, 
+            0,
+                    FUSB_POWER_VAL_PWR_ALL
+        ));  
+    }else{
         cassure(!tcmini_cfg_clr_set(FUSB_REG_MEASURE, 
             FUSB_MEASURE_VAL_MEAS_VBUS 
             | FUSB_MEASURE_MASK_MDAC,
-                    FUSB_MEASURE_VAL_MDAC(0x20)
+                    FUSB_MEASURE_VAL_MDAC(0x4)
         ));
-        cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES0, 
-            FUSB_SWITCHES0_VAL_VCONN_CC1
-            | FUSB_SWITCHES0_VAL_VCONN_CC2
-            | FUSB_SWITCHES0_VAL_PDWN1
-            | FUSB_SWITCHES0_VAL_PDWN2,
-                    FUSB_SWITCHES0_VAL_PU_EN1
-                    | FUSB_SWITCHES0_VAL_PU_EN2
-                    | FUSB_SWITCHES0_VAL_MEAS_CC1
-                    | FUSB_SWITCHES0_VAL_MEAS_CC2
+        cassure(!tcmini_writebyte(FUSB_REG_SWITCHES0, 
+            FUSB_SWITCHES0_VAL_PDWN1 
+            | FUSB_SWITCHES0_VAL_PDWN2
+            | FUSB_SWITCHES0_VAL_MEAS_CC1
+            | FUSB_SWITCHES0_VAL_MEAS_CC2
+            ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASK, 
+            FUSB_MASK_VAL_M_VBUSOK
+            | FUSB_MASK_VAL_M_BC_LVL
+            | FUSB_MASK_VAL_M_COMP_CHNG
+            | FUSB_MASK_VAL_M_COLLISION
+            | FUSB_MASK_VAL_M_ALERT
+            | FUSB_MASK_VAL_M_CRC_CHK,
+                    0
+        ));   
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKA, 
+            FUSB_MASKA_VAL_M_RETRYFAIL
+            | FUSB_MASKA_VAL_M_HARDSENT
+            | FUSB_MASKA_VAL_M_TXSENT
+            | FUSB_MASKA_VAL_M_HARDRST,
+                    0
         ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKB, 
+            FUSB_MASKB_VAL_M_GCRCSENT,
+                    0
+        ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL0, 
+            FUSB_CONTROL0_VAL_INT_MASK
+            | FUSB_CONTROL0_HOST_CUR_MASK,
+                    FUSB_CONTROL0_VAL_HOST_CUR(FUSB_CONTROL0_HOST_CUR_DISABLED)
+        ));
+
+        cassure(!tcmini_cfg_clr_set(FUSB_REG_POWER, 
+            0,
+                    FUSB_POWER_VAL_PWR_ALL
+        ));  
     }
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL3, 
-        FUSB_CONTROL3_MASK_RETRIES,
-                FUSB_CONTROL3_VAL_AUTO_RETRY
-                | FUSB_CONTROL3_VAL_AUTO_HARDRESET
-                | FUSB_CONTROL3_VAL_RETRIES(FUSB_CONTROL3_MAX_RETRIES)
-    ));    
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_MASK, 
-        FUSB_MASK_VAL_M_VBUSOK
-        | FUSB_MASK_VAL_M_BC_LVL
-        | FUSB_MASK_VAL_M_COMP_CHNG
-        | FUSB_MASK_VAL_M_COLLISION
-        | FUSB_MASK_VAL_M_ALERT
-        | FUSB_MASK_VAL_M_CRC_CHK,
-                0
-    ));   
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKA, 
-        FUSB_MASKA_VAL_M_RETRYFAIL
-        | FUSB_MASKA_VAL_M_HARDSENT
-        | FUSB_MASKA_VAL_M_TXSENT
-        | FUSB_MASKA_VAL_M_HARDRST,
-                0
-    ));
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_MASKB, 
-        FUSB_MASKB_VAL_M_GCRCSENT,
-                0
-    ));
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL0, 
-        FUSB_CONTROL0_VAL_INT_MASK
-        | FUSB_CONTROL0_HOST_CUR_MASK,
-                FUSB_CONTROL0_VAL_HOST_CUR(FUSB_CONTROL0_HOST_CUR_DEFAULT_USB)
-    ));
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_CONTROL1, 
-        0,
-                FUSB_CONTROL1_VAL_RX_FLUSH
-                | FUSB_CONTROL1_VAL_ENSOP1DB
-                | FUSB_CONTROL1_VAL_ENSOP2DB
-                | FUSB_CONTROL1_VAL_ENSOP1
-                | FUSB_CONTROL1_VAL_ENSOP2
-    ));    
-    
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_SWITCHES1, 
-        FUSB_SWITCHES1_VAL_AUTO_CRC
-        | FUSB_SWITCHES1_MASK_SPECREV,
-                FUSB_SWITCHES1_VAL_SPECREV(FUSB_SWITCHES1_SPECREV_1_0)
-    ));  
-
-    cassure(!tcmini_cfg_clr_set(FUSB_REG_POWER, 
-        0,
-                FUSB_POWER_VAL_PWR_ALL
-    ));  
 
 error:
     return -err;
@@ -712,6 +1046,7 @@ error:
 }
 
 void tcmini_deinit(){
+    tcmini_disable_irq();
     i2c_deinit(i2c1);
     gpio_set_function(TCMINI_PIN_SDA, GPIO_FUNC_NULL);
     gpio_set_function(TCMINI_PIN_SCL, GPIO_FUNC_NULL);
@@ -719,11 +1054,52 @@ void tcmini_deinit(){
 }
 
 #pragma mark functions
+void tcmini_test(){
+    tcmini_update_connected_status();
+}
+
+void tcmini_stop(){
+    tcmini_disable_irq();
+    tcmini_writebyte(FUSB_REG_POWER, 0);
+}
+
+void tcmini_set_mode(bool isDevice){
+    gIsDeviceMode = isDevice;
+    memset(&gDev, 0, sizeof(gDev));
+    if (!gIsCCManualMode) tcmini_populate_defaults();
+}
+
+void tcmini_ccManualMode(bool on, bool cc2Polarity){
+    gIsCCManualMode = on;
+    gManualModeIscc2Polarity = cc2Polarity;
+    tcmini_populate_defaults();
+    tcmini_initCDevice(&gDev);
+    tcmini_update_connected_status();
+}
+
+void tcmini_set_cap(uint32_t cap){
+    gBorrowCap = cap;
+}
+
+int tcmini_powerproxy(bool enable){
+    int err = 0;
+    gIsPowerProxy = enable;
+    if (gIsDeviceMode){
+        cassure(gDev.isConnected);
+        gIsDeviceMode = false;
+        memset(&gDev, 0, sizeof(gDev));
+        tcmini_ccManualMode(true, !gDev.cc2Polarity);
+    }
+error:
+    return err;
+}
+
 void tcmini_task(){
     tcmini_pd_write_perform();
     if (!gIRQIsPending) return;
     int err = 0;
     static union TCMinitIRQs irqs = {};
+    bool needsHandlePDPacket = false;
 
     cassure(!tcmini_readbyte(FUSB_REG_INTERRUPT, &irqs.irq));
     cassure(!tcmini_readbyte(FUSB_REG_INTERRUPTA, &irqs.irqA));
@@ -750,11 +1126,21 @@ void tcmini_task(){
         //ignore
     }
 
-    if (irqs.irq & FUSB_INTERRUPT_VAL_I_CRC_CHK){
-        irqs.irq &= ~FUSB_INTERRUPT_VAL_I_CRC_CHK;
-        //ignore
+    if (irqs.irq & FUSB_INTERRUPT_VAL_I_ALERT){
+        irqs.irq &= ~FUSB_INTERRUPT_VAL_I_ALERT;
+        uint8_t val = 0;
+        tcmini_readbyte(FUSB_REG_STATUS1, &val);
+        if (!(val & FUSB_STATUS1_VAL_RX_EMPTY)){
+            needsHandlePDPacket = true;
+#ifdef TCMINI_DBG
+        {
+            char buf[0x100] = {};
+            snprintf(buf,sizeof(buf),"[tcmini] status1=0x%02x\r\n",val);
+            tud_cdc_n_write_str(2, buf);
+        }
+#endif
+        }
     }
-
     
     if (irqs.irq & (FUSB_INTERRUPT_VAL_I_BC_LVL | FUSB_INTERRUPT_VAL_I_COMP_CHNG | FUSB_INTERRUPT_VAL_I_ACTIVITY)){
         irqs.irq &= ~(FUSB_INTERRUPT_VAL_I_BC_LVL | FUSB_INTERRUPT_VAL_I_COMP_CHNG | FUSB_INTERRUPT_VAL_I_ACTIVITY);
@@ -772,8 +1158,13 @@ void tcmini_task(){
         gDev.sndDo = gDev.sndDone = (gDev.sndDone+1) % SND_MAX_QUEUE;
     }
 
-    if (irqs.irqB & FUSB_INTERRUPTB_VAL_I_GCRCSENT){
+    if ((irqs.irqB & FUSB_INTERRUPTB_VAL_I_GCRCSENT) || (irqs.irq & FUSB_INTERRUPT_VAL_I_CRC_CHK)){
         irqs.irqB &= ~FUSB_INTERRUPTB_VAL_I_GCRCSENT;
+        irqs.irq &= ~FUSB_INTERRUPT_VAL_I_CRC_CHK;
+        needsHandlePDPacket = true;
+    }
+
+    if (needsHandlePDPacket){
         tcmini_handle_pd_packet();
     }
 
@@ -865,4 +1256,33 @@ int tcmini_vmd_apple_send_dfu(){
 
 int tcmini_vmd_apple_send_map_uart(enum TCMINI_PIN_MAPPING mapping){
     return tcmini_vdm_apple_perform_action(0,0,0,mapping,0x306,NULL,0);
+}
+
+int tcmini_pd_sendreq(int pos){
+    int err = 0;
+    pd_header_t req = {
+        .msg_type = PD_DATA_REQUEST,
+        .power_role = PD_POWER_ROLE_SINK,
+        .data_role = PD_DATA_ROLE_UFP,
+        .msg_id = 0,
+        .n_data_obj = 1,
+        .specs_rev = PD_REV_20,
+        .extended = 0,
+    };
+    pd_rdo_fixed_variable_t pdo = {
+        .current_extremum_10ma = 100, //3A
+        .current_operate_10ma = 100, //3A
+        .reserved = 0,
+        .epr_mode_capable = 0,
+        .unchunked_ext_msg_support = 0,
+        .no_usb_suspend = 1,
+        .usb_comm_capable = 0,
+        .capability_mismatch = 0,
+        .give_back_flag = 0,
+        .object_position = pos,
+    };
+    parse_request(*(uint32_t*)&pdo);
+    cassure(!tcmini_pd_send(req, (uint32_t*)&pdo, false));    
+error:
+    return err;
 }

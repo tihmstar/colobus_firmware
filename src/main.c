@@ -593,6 +593,52 @@ void myusb_task(){
     } else if (!strcmp(line, "swdold")){
         probe_set_protocol(false);
         tud_cdc_n_write_str(ITF_CONTROL, "Setting SWD protocol to: old\r\n");
+    } else if (!strcmp(line, "tcdevice")){
+        tcmini_set_mode(1);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini in device mode\r\n");
+    } else if (!strcmp(line, "tchost")){
+        tcmini_set_mode(0);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini in host mode\r\n");
+    } else if (!strcmp(line, "tcmanual1")){
+        tcmini_ccManualMode(1,0);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini manual CC polarity set to 1\r\n");
+    } else if (!strcmp(line, "tcmanual2")){
+        tcmini_ccManualMode(1,1);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini manual CC polarity set to 2\r\n");
+    } else if (!strcmp(line, "tcmanualoff")){
+        tcmini_ccManualMode(0,0);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini CC polarity set to autodetect\r\n");
+    } else if (!strcmp(line, "tcproxyon")){
+        tcmini_powerproxy(1);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini enable power proxy\r\n");
+    } else if (!strcmp(line, "tcproxyoff")){
+        tcmini_powerproxy(0);
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini disable power proxy\r\n");
+    } else if (!strncmp(line, "tcpdreq",sizeof("tcpdreq")-1)){
+        int pos = atoi(line+sizeof("tcpdreq"));
+        char buf[0x100] = {};
+        snprintf(buf,sizeof(buf),"tcmini PD req %d\r\n",pos);
+        tud_cdc_n_write_str(ITF_CONTROL, buf);
+        tcmini_pd_sendreq(pos);
+    } else if (!strcmp(line, "tcpdcap9v")){
+        char buf[0x100] = {};
+        uint32_t cap = 0x0002d12c;
+        snprintf(buf,sizeof(buf),"tcmini PD cap 0x%08x\r\n",cap);
+        tud_cdc_n_write_str(ITF_CONTROL, buf);
+        tcmini_set_cap(cap);
+    } else if (!strncmp(line, "tcpdcap",sizeof("tcpdcap")-1)){
+        const char *capstr = line+sizeof("tcpdcap");
+        if (capstr[0] == '0' && (capstr[1] == 'x' || capstr[1] == 'X')){
+            capstr+=2;
+        }
+        uint32_t cap = strtoul(capstr, NULL, 16);
+        char buf[0x100] = {};
+        snprintf(buf,sizeof(buf),"tcmini PD cap 0x%08x\r\n",cap);
+        tud_cdc_n_write_str(ITF_CONTROL, buf);
+        tcmini_set_cap(cap);
+    } else if (!strcmp(line, "tcstop")){
+        tcmini_stop();
+        tud_cdc_n_write_str(ITF_CONTROL, "tcmini stop\r\n");
     } else {
       tud_cdc_n_write_str(ITF_CONTROL, "got unrecognised command: '");
       tud_cdc_n_write_str(ITF_CONTROL, line);
